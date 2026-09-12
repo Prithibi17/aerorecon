@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AeroRecon — Reconstruction workspace</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2362e6bd'/%3E%3Cpath d='M8 29L20 9l12 20-12-7z' fill='%23111c20'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brandmark">△</span><span>AeroRecon<small>RECONSTRUCTION STUDIO</small></span></a>
+    <button id="newRun" class="primary"><span>＋</span> New reconstruction</button>
+    <div class="sideheading">WORKSPACE <span id="runCount">0</span></div>
+    <nav id="runList" aria-label="Reconstructions"></nav>
+    <div class="sidebottom"><div class="localbadge">◈ &nbsp; Local processing</div><p>Your videos and models<br>stay on this computer.</p><span class="version">AERORECON / V0.2</span></div>
+  </aside>
+  <main>
+    <header><div class="breadcrumb">Workspace <span>/</span> Reconstruction</div><span class="localtag">ON THIS DEVICE</span></header>
+    <section class="projecthead"><div><div class="eyebrow">VIDEO TO 3D</div><h1 id="projectTitle">Reconstruction workspace</h1><p id="projectSubtitle">Choose a video to begin.</p></div><div class="projectactions"><button id="buildAI" class="button">◇ &nbsp; Build full-video map</button><a id="downloadCloud" class="button disabled" href="#">↓ &nbsp; Export point cloud</a></div></section>
+    <section class="workarea">
+      <div class="maincolumn">
+        <div class="viewbar"><div class="tabs" role="tablist" aria-label="Result views"><button class="active" role="tab" aria-selected="true" data-view="model">3D model</button><button role="tab" aria-selected="false" data-view="source">Source video</button><button role="tab" aria-selected="false" data-view="frames">Keyframes</button></div><span id="modelBadge" class="badge">SPARSE RECONSTRUCTION</span></div>
+        <div class="viewport" id="viewport">
+          <div id="canvasHost" role="img" aria-label="Interactive reconstructed 3D point cloud. Drag to orbit, scroll to zoom."></div>
+          <div class="viewlabel" id="viewLabel"><span class="mintdot"></span> PERSPECTIVE <span class="muted">/ RELATIVE COORDINATES</span></div>
+          <div id="modelMessage" class="modelmessage"><span class="scanicon">⌁</span><h2>Preparing your workspace</h2><p>Loading local reconstructions…</p></div>
+          <div class="viewtools" id="viewTools"><button id="resetView" title="Fit model to view">⌖ <span>Fit view</span></button><button id="topView" title="View along the model Y axis">⊞ <span>Axis view</span></button><button id="rotateView" aria-pressed="false">↻ <span>Orbit</span></button></div>
+          <div class="viewfooter" id="viewFooter"><span>Drag to orbit &nbsp; · &nbsp; Scroll to zoom &nbsp; · &nbsp; Right-drag to pan</span><span id="pointCount">— points</span></div>
+          <div id="sourceView" class="alternate" hidden><video id="sourceVideo" controls preload="metadata"></video><p>Original footage • processing does not modify the source</p></div>
+          <div id="framesView" class="alternate framesgrid" hidden></div>
+        </div>
+        <div class="metrics"><div><span id="viewsLabel">REGISTERED FRAMES</span><strong id="registered">—</strong><small id="registrationRatio">Awaiting reconstruction</small></div><div><span>3D POINTS</span><strong id="points">—</strong><small id="pointsExplanation">Triangulated visual features</small></div><div><span id="qualityLabel">REPROJECTION ERROR</span><strong id="reprojection">—</strong><small id="qualityExplanation">Image fit, not ground accuracy</small></div></div>
+        <section class="activity"><div class="activityhead"><h2>Processing activity</h2><button id="toggleLogs" aria-expanded="false">Show log ↓</button></div><div class="stages" id="stages"></div><pre id="logs" hidden></pre></section>
+      </div>
+      <aside class="inspector">
+        <h2>Scene layers</h2><label class="layer" id="surfaceLayer" hidden><span><b class="layericon">◇</b> Reconstructed surface</span><input type="checkbox" id="surfaceToggle" checked></label><label class="layer"><span><b class="layericon">⁙</b> Point cloud</span><input type="checkbox" id="cloudToggle" checked></label><label class="layer"><span><b class="layericon">⌁</b> Camera path</span><input type="checkbox" id="pathToggle" checked></label><label class="layer"><span><b class="layericon">⊞</b> Reference grid</span><input type="checkbox" id="gridToggle" checked></label>
+        <div class="setting"><label for="pointSize">Point size <output id="pointSizeValue">2.5</output></label><input id="pointSize" type="range" min="1" max="6" step="0.5" value="2.5"></div>
+        <div class="setting"><label for="colorMode">Surface / point colors</label><select id="colorMode"><option value="rgb">Original color</option><option value="semantic">Ground / buildings / vegetation</option><option value="mint">High contrast</option></select></div>
+        <div class="divider"></div><h2>Reconstruction details</h2><dl><div><dt>Output</dt><dd id="outputType">Sparse point cloud</dd></div><div><dt>Scale</dt><dd>Relative</dd></div><div><dt>GPS alignment</dt><dd>Not supplied</dd></div><div><dt>Geometry</dt><dd id="geometryType">Estimated</dd></div></dl>
+        <div class="notice"><span>ⓘ</span><div><strong id="noticeTitle">Scale is not calibrated</strong><p id="noticeText">A GPS file or known distance is needed before measuring in metres. Dense surfaces are not included yet.</p></div></div>
+        <div class="divider"></div><h2>Project files</h2><div id="exports" class="exports"></div>
+        <div id="errorBox" class="errorbox" hidden></div>
+      </aside>
+    </section>
+    <footer><span>AeroRecon AI</span><span>Geometry first. Evidence always.</span></footer>
+  </main>
+  <dialog id="uploadDialog"><form id="uploadForm"><div class="dialoghead"><div class="eyebrow">NEW RECONSTRUCTION</div><button type="button" id="closeDialog" aria-label="Close upload dialog">×</button></div><h2>Start with your footage.</h2><p>Upload a short drone video with overlapping views and steady camera movement.</p><label class="dropzone" id="dropzone"><span class="uploadicon">↥</span><strong id="fileName">Choose or drop a video</strong><small>MP4, MOV, M4V, AVI or MKV · up to 1 GB</small><input id="videoFile" type="file" accept=".mp4,.mov,.m4v,.avi,.mkv" required></label><div class="uploadnote">Camera setup samples up to 100 keyframes. The full-map stage then tracks and fuses every video frame. Your video stays local.</div><p id="uploadError" role="alert"></p><button id="submitUpload" type="submit" class="primary">Build 3D reconstruction →</button></form></dialog>
+  <div id="toast" role="status" hidden></div>
+  <script type="module" src="/app.js?v=photo-atlas-3"></script>
+</body>
+</html>

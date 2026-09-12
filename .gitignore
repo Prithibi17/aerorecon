@@ -1,0 +1,26 @@
+# Environments and generated Python files
+.venv/
+.venv-ai/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Private/local inputs, outputs, datasets, and model weights
+data/
+outputs/
+models/
+third_party/
+
+# Runtime artifacts
+*.log
+*.tmp
+server-error.log
+video-reference-frame.jpg
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
