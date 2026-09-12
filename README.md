@@ -9,6 +9,8 @@ AeroRecon extracts camera motion from a video, predicts per-frame geometry and s
 
 ## Current state
 
+Phase 1 of the production upgrade is implemented: content-aware keyframe selection, validated camera-model configuration, modular COLMAP SfM, structured progress, and diagnostic artifacts. See [the full codebase audit](docs/CODEBASE_AUDIT.md) for an evidence-based description of what is real, approximate, missing, and planned.
+
 The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS field video and processes all 718 decoded frames.
 
 | Capability | State | What it means |
@@ -327,7 +329,7 @@ See OpenDroneMap's [flight planning guidance](https://docs.opendronemap.org/flyi
   tests.test_object_models tests.test_depth_refinement tests.test_pose_tracking
 ```
 
-Current local result: 17 tests passed and 5 optional AI-environment tests were skipped in the classical environment; 10 AI geometry tests passed in the AI environment.
+Current classical/server result: 22 tests passed and 5 optional AI-environment tests were skipped. The Phase 1 synthetic end-to-end validation registered 24/24 cameras with 12,683 sparse points and 0.243 px mean reprojection error. The previously documented AI geometry suite passed 10 tests in the AI environment.
 
 ## Repository policy
 

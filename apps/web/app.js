@@ -191,12 +191,13 @@ function renderDetails(run) {
   }
   if(ai){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent=fused?'Fused surface (GLB) ↓':'AI depth surface (GLB) ↓';$('exports').append(link);}
   if(fused){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/frames.csv`;link.textContent='Every-frame coverage (CSV) ↓';$('exports').append(link);}
-  const stages=fused?['Decode every frame','Shared camera alignment','Multi-view fusion','Combined surface']:ai?['Video check','AI depth','Backprojection','Dense preview']:['Video check','Features','Matching','3D reconstruction'];
-  let current=run.stage.includes('features')?1:run.stage.includes('Matching')?2:run.stage.includes('3D')?3:0;
+  const pipelineProgress=run.progress||{};
+  const stages=fused?['Decode every frame','Shared camera alignment','Multi-view fusion','Combined surface']:ai?['Video check','AI depth','Backprojection','Dense preview']:(pipelineProgress.stages||['Video analysis','Keyframe selection','Feature extraction','Frame matching','Sparse reconstruction','Quality report']);
+  let current=Number.isInteger(pipelineProgress.stage_index)?pipelineProgress.stage_index:(run.stage.includes('features')?1:run.stage.includes('Matching')?2:run.stage.includes('3D')?3:0);
   if(fused&&m.frames_integrated)current=m.frames_integrated===m.frames_decoded?3:2;
   if(ready)current=4;
   $('stages').replaceChildren();
-  stages.forEach((label,i)=>{const stage=document.createElement('div');stage.className=`stage ${i<current?'done':i===current?'current':''}`;const icon=document.createElement('b');icon.textContent=i<current?'✓':i+1;stage.append(icon,document.createTextNode(label));$('stages').append(stage);});
+  stages.forEach((label,i)=>{const stage=document.createElement('div');stage.className=`stage ${i<current||ready?'done':i===current?'current':''}`;const icon=document.createElement('b');icon.textContent=i<current||ready?'✓':i+1;stage.append(icon,document.createTextNode(label));if(i===current&&!ready&&pipelineProgress.percent!==undefined){const pct=document.createElement('small');pct.textContent=` ${pipelineProgress.percent.toFixed(0)}%`;stage.append(pct);}$('stages').append(stage);});
   $('errorBox').hidden=!(run.error||run.warnings.length);
   $('errorBox').textContent=run.error||run.warnings.join(' ');
   if(ready)loadCloud(run.id);

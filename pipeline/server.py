@@ -88,16 +88,17 @@ def describe(path):
     manifest = read_json(path/'run_manifest.json')
     job = read_json(path/'job.json')
     metrics = read_json(path/'metrics.json')
+    progress = read_json(path/'progress.json')
     if manifest.get('fusion'):
         metrics = {'engine': manifest.get('engine', 'da3-small'), 'fusion': manifest['fusion'], **read_json(path/'progress.json'), **metrics}
     status = manifest.get('status', job.get('status', 'queued'))
     tail = log_tail(path)
-    stage = 'Checking video'
-    if 'Extracting SIFT' in tail or 'feature_extraction' in tail:
+    stage = progress.get('stage') or 'Checking video'
+    if not progress and ('Extracting SIFT' in tail or 'feature_extraction' in tail):
         stage = 'Finding visual features'
-    if 'Matching sequential' in tail or 'pairing.cc' in tail:
+    if not progress and ('Matching sequential' in tail or 'pairing.cc' in tail):
         stage = 'Matching frames'
-    if 'Recovering cameras' in tail or 'incremental_pipeline' in tail:
+    if not progress and ('Recovering cameras' in tail or 'incremental_pipeline' in tail):
         stage = 'Reconstructing 3D'
     if status == 'complete':
         stage = 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready'
@@ -127,7 +128,7 @@ def describe(path):
         warnings.append('Partial reconstruction: only part of the video is represented. This is not a complete map of the area.')
     if metrics.get('model_count', 0) > 1 and not any('disconnected' in w for w in warnings):
         warnings.append('Disconnected models were found. Showing the largest by registered frame count.')
-    return dict(id=path.name, name=name, status=status, stage=stage,
+    return dict(id=path.name, name=name, status=status, stage=stage, progress=progress,
                 metrics=metrics, elapsed_s=manifest.get('elapsed_s'),
                 error=manifest.get('error'), warnings=warnings,
                 synthetic=path.name == 'synthetic', created=path.stat().st_ctime)
@@ -180,7 +181,7 @@ def video(identifier: str):
 
 @app.get('/api/runs/{identifier}/download/{name}')
 def download(identifier: str, name: str):
-    allowed = {'sparse.ply', 'dense.ply', 'surface.glb', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json'}
+    allowed = {'sparse.ply', 'dense.ply', 'surface.glb', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
     if name not in allowed:
         raise HTTPException(404)
     path = run_dir(identifier)/name
