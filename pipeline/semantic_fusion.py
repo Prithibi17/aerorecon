@@ -155,7 +155,7 @@ def run(args):
     start=time.time()
     manifest=dict(schema='aerorecon.run/v1',status='running',pid=os.getpid(),started_at=start,
         input=source['input'],input_sha256=source['input_sha256'],engine='moge-2',fusion='semantic-tsdf',
-        display_name='Flat field · all-frame 3D fusion',configuration=vars(args),units='arbitrary',georeferenced=False,
+        display_name=f"{source.get('display_name', 'Reconstruction')} · full-video map",configuration=vars(args),units='arbitrary',georeferenced=False,
         warnings=['Experimental reconstruction: camera calibration is assumed and metric dimensions are unvalidated.',
         'Semantic classes and ground orientation are AI estimates. A flat-field prior is applied to semantic ground only.'])
     save(output/'run_manifest.json',manifest)
@@ -194,7 +194,7 @@ def run(args):
         if (corrector_path/'model.pt').exists() and not (corrector_path/'DO_NOT_USE').exists():
             from pipeline.train_aerial_corrector import Corrector
             corrector=Corrector().cuda().eval();corrector.load_state_dict(torch.load(corrector_path/'model.pt',map_location='cpu',weights_only=True)['state_dict'])
-            manifest['display_name']='Flat field · tracked and trained fusion'
+            manifest['display_name']=f"{source.get('display_name', 'Reconstruction')} · trained full-video map"
             manifest['warnings'].append('A synthetic-aerial residual model is enabled only on frames where held-out sparse tracks improve.')
             save(output/'run_manifest.json',manifest)
         processor=SegformerImageProcessor.from_pretrained(str(ROOT/'models/SegFormer-B0'))
