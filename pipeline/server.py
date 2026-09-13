@@ -101,7 +101,8 @@ def describe(path):
     if not progress and ('Recovering cameras' in tail or 'incremental_pipeline' in tail):
         stage = 'Reconstructing 3D'
     if status == 'complete':
-        stage = ('Photogrammetric dense map ready' if manifest.get('engine') == 'colmap-mvs'
+        stage = ('Open3D refined surface ready' if manifest.get('engine') == 'open3d-tsdf'
+                 else 'Photogrammetric dense map ready' if manifest.get('engine') == 'colmap-mvs'
                  else 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready')
     elif status == 'failed':
         stage = 'Processing failed'
@@ -138,7 +139,8 @@ def describe(path):
 @app.get('/api/runs')
 def runs():
     return sorted([describe(p) for p in OUTPUTS.iterdir() if p.is_dir() and
-                   ((p/'run_manifest.json').exists() or (p/'job.json').exists())],
+                   ((p/'run_manifest.json').exists() or (p/'job.json').exists())
+                   and not read_json(p/'run_manifest.json').get('hidden')],
                   key=lambda x: x['created'], reverse=True)
 
 
@@ -182,7 +184,7 @@ def video(identifier: str):
 
 @app.get('/api/runs/{identifier}/download/{name}')
 def download(identifier: str, name: str):
-    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
+    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_open3d.ply', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
     if name not in allowed:
         raise HTTPException(404)
     path = run_dir(identifier)/name

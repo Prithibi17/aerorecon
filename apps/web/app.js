@@ -154,16 +154,17 @@ function renderDetails(run) {
   $('projectTitle').textContent = run.synthetic ? 'Synthetic test scene' : run.name;
   const m=run.metrics;
   const ai=['da3-small','moge-2'].includes(m.engine);
-  const photogrammetric=m.engine==='colmap-mvs';
-  const fused=!!m.fusion;
+  const open3d=m.engine==='open3d-tsdf';
+  const photogrammetric=m.engine==='colmap-mvs'||open3d;
+  const fused=!!m.fusion&&!open3d;
   const partial=run.status==='complete'&&m.registered_ratio<.8;
   const elapsed=run.elapsed_s?(run.elapsed_s<60?`${Math.round(run.elapsed_s)} sec`:`${Math.round(run.elapsed_s/60)} min`):'';
   $('projectSubtitle').textContent = `${m.calibration_suspect?'Unreliable geometry — calibration failed':partial?'Partial sparse model ready':run.stage} · ${run.synthetic?'Ideal synthetic scene':'Drone video'}${elapsed?' · '+elapsed+' processing':''}`;
-  $('modelBadge').textContent=photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':m.calibration_suspect?'UNRELIABLE GEOMETRY':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
+  $('modelBadge').textContent=open3d?'OPEN3D TSDF':photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':m.calibration_suspect?'UNRELIABLE GEOMETRY':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
   $('modelBadge').style.color=ai||partial||m.calibration_suspect||m.intrinsics_fixed?'var(--orange)':'';
   $('surfaceLayer').hidden=!(ai||photogrammetric);
-  $('outputType').textContent=photogrammetric?'Dense verified point cloud':fused?'Full-video fused surface':ai?'AI depth + dense cloud':'Sparse point cloud';
-  $('geometryType').textContent=photogrammetric?'Multi-view stereo':ai?'AI-inferred':'Estimated';
+  $('outputType').textContent=open3d?'Open3D refined surface':photogrammetric?'Dense verified point cloud':fused?'Full-video fused surface':ai?'AI depth + dense cloud':'Sparse point cloud';
+  $('geometryType').textContent=open3d?'Calibrated TSDF':photogrammetric?'Multi-view stereo':ai?'AI-inferred':'Estimated';
   $('noticeTitle').textContent=ai?'AI preview, not a measured map':'Scale is not calibrated';
   $('noticeText').textContent=ai?'This surface comes from the middle view’s predicted depth. The point cloud combines multiple views. Neither is validated for measurement.':'A GPS file or known distance is needed before measuring in metres. Dense surfaces are not included yet.';
   $('viewsLabel').textContent=fused?'FRAMES FUSED':ai?'PREDICTED VIEWS':'REGISTERED FRAMES';
@@ -176,6 +177,7 @@ function renderDetails(run) {
   $('reprojection').textContent = m.mean_reprojection_error_px!==undefined?`${m.mean_reprojection_error_px.toFixed(2)} px`:'—';
   if(ai){$('registered').textContent=m.predicted_views||'—';$('registrationRatio').textContent='Views jointly predicted';$('reprojection').textContent='DA3 Small';}
   if(photogrammetric){$('viewsLabel').textContent='REGISTERED KEYFRAMES';$('pointsExplanation').textContent='Geometrically verified multi-view points';$('qualityLabel').textContent='IMAGE FIT';$('qualityExplanation').textContent='COLMAP reprojection error';$('noticeTitle').textContent='Observed geometry · relative scale';$('noticeText').textContent='Only surfaces supported by overlapping calibrated views are shown. Missing regions are left incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
+  if(open3d){$('pointsExplanation').textContent='TSDF surface vertices';$('qualityLabel').textContent='DEPTH SAMPLES';$('reprojection').textContent=number(m.valid_depth_pixels);$('qualityExplanation').textContent='Calibrated non-sky pixels fused';$('noticeTitle').textContent='Open3D fused geometry · relative scale';$('noticeText').textContent='Open3D TSDF combines COLMAP geometric depth from all registered views, removes small fragments, and smooths stereo noise. Unsupported areas remain incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
   if(fused){$('registered').textContent=`${m.frames_integrated||0} / ${m.frames_decoded||'…'}`;$('registrationRatio').textContent=m.coverage_percent?`${m.coverage_percent.toFixed(0)}% of video · ${m.last_timestamp_s.toFixed(2)} seconds`:'Processing every video frame';$('noticeTitle').textContent='Full-video fusion · relative scale';$('noticeText').textContent='Depth from all integrated frames contributes to one shared surface. Geometry and camera positions remain unvalidated; gaps may remain where the video provides insufficient evidence.';}
   if(m.engine==='moge-2'){$('reprojection').textContent='MoGe-2 Base';$('noticeTitle').textContent='Estimated ground plane · Y up';$('noticeText').textContent='Sky is excluded by semantic labels. A rigid rotation aligns estimated ground with X/Z, preserving height. Semantic colors: green ground, orange buildings, dark green vegetation, gray other. Coordinates use relative scale; dimensions are not metres.';}
   if(m.aerial_corrector_frames!==undefined){$('qualityLabel').textContent='TRAINED CORRECTOR';$('reprojection').textContent=`${m.aerial_corrector_frames} / ${m.frames_integrated} frames`;$('qualityExplanation').textContent='Accepted only when held-out feature geometry improved';}
@@ -192,7 +194,7 @@ function renderDetails(run) {
     link.href=`/api/runs/${run.id}/download/${file}`;if(!ready)link.className='disabled';$('exports').append(link);
   }
   if(ai){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent=fused?'Fused surface (GLB) ↓':'AI depth surface (GLB) ↓';$('exports').append(link);}
-  if(photogrammetric){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent='Calibrated textured mesh (GLB) ↓';$('exports').append(link);}
+  if(photogrammetric){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent=open3d?'Open3D surface (GLB) ↓':'Calibrated textured mesh (GLB) ↓';$('exports').append(link);}
   if(fused){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/frames.csv`;link.textContent='Every-frame coverage (CSV) ↓';$('exports').append(link);}
   const pipelineProgress=run.progress||{};
   const stages=fused?['Decode every frame','Shared camera alignment','Multi-view fusion','Combined surface']:ai?['Video check','AI depth','Backprojection','Dense preview']:(pipelineProgress.stages||['Video analysis','Keyframe selection','Feature extraction','Frame matching','Sparse reconstruction','Quality report']);

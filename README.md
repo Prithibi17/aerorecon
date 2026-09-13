@@ -18,6 +18,7 @@ The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS fi
 | Local upload and project UI | Working | Upload, process, inspect, orbit, select layers, and download artifacts locally. |
 | Classical camera reconstruction | Working with assumptions | COLMAP/PyCOLMAP registered 75/75 selected views from the full clip. Intrinsics are assumed rather than independently calibrated. |
 | Dense multi-view stereo | Working | CUDA PatchMatch and geometric consistency create observed depth and a dense colored point cloud. |
+| Open3D TSDF refinement | Working | Calibrated depth maps and RGB views fuse into a smoother surface; small fragments and non-manifold edges are removed. |
 | Semantic sky masking | Working with model limitations | SegFormer masks sky before stereo fusion so moving clouds do not become false geometry. |
 | Camera-projected mesh texture | Working with gaps | COLMAP selects calibrated source views per visible face, corrects color, and bakes a real-image atlas. |
 | Per-frame camera tracking | Working experimentally | Optical flow and PnP track the remaining 664 frames; this sample used zero interpolated poses. |
@@ -50,6 +51,21 @@ The latest accepted run is `outputs/drone-photogrammetry-dense` (generated artif
 | Output scale | Relative |
 
 The reprojection error measures how well sparse features fit the recovered cameras. It is an internal consistency check, **not an independent ground-accuracy measurement**. Uniform crops, distant objects, occluded sides, and surfaces seen with little camera translation can remain incomplete.
+
+### Open3D refinement
+
+The `outputs/drone-open3d-tsdf-v2` comparison run fuses the same 75 calibrated depth maps and semantic sky masks into an Open3D scalable TSDF volume.
+
+| Measurement | Result |
+| --- | ---: |
+| Calibrated depth views fused | 75 / 75 |
+| Non-sky depth samples integrated | 16,474,618 |
+| Raw TSDF triangles | 1,324,455 |
+| Small-component triangles removed | 246,112 |
+| Final vertices | 155,457 |
+| Final triangles | 249,999 |
+
+The Open3D output uses observed RGB vertex colors. It is smoother and smaller than the Poisson comparison mesh, but it cannot recover surfaces that the video did not observe with enough parallax.
 
 ## What happened during development
 
@@ -92,6 +108,7 @@ flowchart LR
 
 - `pipeline/cli.py` — video validation, keyframe extraction, COLMAP feature extraction/matching/mapping, run manifests, and sparse exports.
 - `pipeline/dense_mvs.py` — CUDA PatchMatch, SegFormer sky masks, geometric fusion, Poisson mesh, calibrated multi-view texture, GLB, and browser export.
+- `pipeline/open3d_refine.py` — calibrated RGBD integration, scalable TSDF extraction, component cleanup, Taubin smoothing, decimation, and colored GLB/browser export.
 - `pipeline/pose_tracking.py` — dense frame trajectory using optical flow, 3D feature tracks, robust PnP, and registered anchors.
 - `pipeline/semantic_fusion.py` — main experimental pipeline: MoGe-2, SegFormer, sparse scale alignment, depth refinement, field leveling, TSDF fusion, object solidification, and exports.
 - `pipeline/object_models.py` — connected semantic clusters, procedural houses/trees, closed meshes, and video-color transfer.
@@ -182,6 +199,16 @@ The dense command defaults to this ignored local path. Override it with `--colma
 ```
 
 The SegFormer model is used only to remove sky from stereo fusion. The geometry comes from agreement across calibrated video views; it does not synthesize house or tree shapes.
+
+### 6. Refine the dense depth maps with Open3D
+
+```powershell
+.\.venv-ai\Scripts\python.exe -m pipeline.open3d_refine outputs\YOUR_DENSE_RUN `
+  --out outputs\YOUR_OPEN3D_RUN `
+  --ground-transform outputs\YOUR_GROUND_RUN\ground_transform.json
+```
+
+The default 0.015 voxel length and three Taubin smoothing iterations were tested on the supplied clip. Smaller voxels preserve more detail but increase memory use and noise.
 
 ## Run the application
 
