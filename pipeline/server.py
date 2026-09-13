@@ -101,7 +101,8 @@ def describe(path):
     if not progress and ('Recovering cameras' in tail or 'incremental_pipeline' in tail):
         stage = 'Reconstructing 3D'
     if status == 'complete':
-        stage = 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready'
+        stage = ('Photogrammetric dense map ready' if manifest.get('engine') == 'colmap-mvs'
+                 else 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready')
     elif status == 'failed':
         stage = 'Processing failed'
     elif manifest.get('engine') == 'da3-small':
@@ -181,7 +182,7 @@ def video(identifier: str):
 
 @app.get('/api/runs/{identifier}/download/{name}')
 def download(identifier: str, name: str):
-    allowed = {'sparse.ply', 'dense.ply', 'surface.glb', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
+    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
     if name not in allowed:
         raise HTTPException(404)
     path = run_dir(identifier)/name

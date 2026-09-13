@@ -2,21 +2,24 @@
 
 Experimental, local-first reconstruction of a 3D scene from drone video.
 
-AeroRecon extracts camera motion from a video, predicts per-frame geometry and semantic classes, fuses the observations into a shared surface, levels agricultural ground, creates approximate house/tree solids, and exports a browser-viewable map, point cloud, textured GLB, evidence files, and quality report.
+AeroRecon extracts camera motion from a video and reconstructs overlapping views with CUDA multi-view stereo. The primary output is a browser-viewable dense point cloud and a camera-projected textured mesh. Experimental monocular-depth and semantic object pipelines remain available for comparison.
 
 > [!WARNING]
 > AeroRecon is a research prototype. Its current output is **not survey-grade, metrically calibrated, georeferenced, or independently validated**. Do not use it for engineering measurements, navigation, boundaries, construction, inspection, safety decisions, or legal land records.
 
 ## Current state
 
-Phase 1 of the production upgrade is implemented: content-aware keyframe selection, validated camera-model configuration, modular COLMAP SfM, structured progress, and diagnostic artifacts. See [the full codebase audit](docs/CODEBASE_AUDIT.md) for an evidence-based description of what is real, approximate, missing, and planned.
+The current primary path uses content-aware keyframes sampled across the complete video, COLMAP sparse camera recovery, CUDA PatchMatch stereo, geometric depth fusion, SegFormer sky masks, Poisson meshing, and calibrated multi-view texture projection. See [the full codebase audit](docs/CODEBASE_AUDIT.md) for an evidence-based description of what is real, approximate, missing, and planned.
 
 The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS field video and processes all 718 decoded frames.
 
 | Capability | State | What it means |
 | --- | --- | --- |
 | Local upload and project UI | Working | Upload, process, inspect, orbit, select layers, and download artifacts locally. |
-| Classical camera reconstruction | Working with assumptions | COLMAP/PyCOLMAP supplies 54 registered anchor views. Intrinsics are assumed rather than independently calibrated. |
+| Classical camera reconstruction | Working with assumptions | COLMAP/PyCOLMAP registered 75/75 selected views from the full clip. Intrinsics are assumed rather than independently calibrated. |
+| Dense multi-view stereo | Working | CUDA PatchMatch and geometric consistency create observed depth and a dense colored point cloud. |
+| Semantic sky masking | Working with model limitations | SegFormer masks sky before stereo fusion so moving clouds do not become false geometry. |
+| Camera-projected mesh texture | Working with gaps | COLMAP selects calibrated source views per visible face, corrects color, and bakes a real-image atlas. |
 | Per-frame camera tracking | Working experimentally | Optical flow and PnP track the remaining 664 frames; this sample used zero interpolated poses. |
 | Monocular depth | Working experimentally | MoGe-2 Base predicts depth/validity for every frame. Sparse features align relative scale. |
 | Semantic understanding | Working with errors | SegFormer identifies sky, field, buildings, and vegetation, but was trained for general scenes and misclassifies this aerial domain. |
@@ -28,32 +31,25 @@ The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS fi
 | GPS/GCP/IMU alignment | Not implemented | The map has no latitude/longitude, surveyed control, gravity measurement, or north heading. |
 | Real-world accuracy validation | Not completed | Internal consistency numbers are available; no LiDAR, RTK, surveyed distance, or withheld real-scene ground truth has been used. |
 
-## Latest experimental result
+## Latest dense photogrammetry result
 
-The latest accepted run is `outputs/drone-photo-textured-ground-clean` (generated artifacts are ignored by Git).
+The latest accepted run is `outputs/drone-photogrammetry-dense` (generated artifacts are ignored by Git).
 
 | Measurement | Result |
 | --- | ---: |
-| Frames decoded and fused | 718 / 718 |
-| Registered COLMAP anchors | 54 |
-| Optical-flow/PnP tracked frames | 664 |
-| Interpolated fallback poses | 0 |
-| Median tracking support | 1,387.5 inlier 3D features |
-| Frames with a measured local field plane | 689 |
-| Frames using the shared field pose | 718 |
-| Median field-plane support | 72.9% |
-| Final vertices | 69,049 |
-| Final triangles | 126,568 |
-| Approximate house solids | 29 |
-| Approximate tree solids | 32 |
-| Texture atlas | 1024×1024 |
-| Texture evidence | 254,428 samples from 54 registered frames |
-| Median sparse-depth discrepancy | 5.83% |
-| Locally refined depth frames | 606 |
-| Aerial corrector accepted | 260 / 718 frames |
-| Internal held-out depth discrepancy | 6.57% → 5.91% |
+| Video coverage | 0.00–28.44 seconds |
+| Registered keyframes | 75 / 75 |
+| Sparse reprojection error | 1.04 px |
+| Geometrically fused non-sky points | 486,360 |
+| Semantic sky masks | 75 |
+| Mean masked sky area | 47.2% |
+| Browser mesh vertices | 173,378 |
+| Browser mesh triangles | 169,802 |
+| Faces assigned to calibrated views | 120,306 |
+| Texture atlas | 4096×2966 |
+| Output scale | Relative |
 
-The depth discrepancy is measured against feature geometry derived from the same assumed-camera reconstruction. It is an internal consistency check, **not an independent accuracy measurement**. The house/tree counts are accepted semantic clusters, not verified real object counts.
+The reprojection error measures how well sparse features fit the recovered cameras. It is an internal consistency check, **not an independent ground-accuracy measurement**. Uniform crops, distant objects, occluded sides, and surfaces seen with little camera translation can remain incomplete.
 
 ## What happened during development
 
@@ -76,31 +72,26 @@ The depth discrepancy is measured against feature geometry derived from the same
 flowchart LR
     A[Drone video] --> B[Decode and score frames]
     B --> C[COLMAP SIFT reconstruction]
-    C --> D[Registered camera anchors]
-    D --> E[Optical flow + PnP for every frame]
-    A --> F[MoGe-2 depth and validity]
-    A --> G[SegFormer semantic classes]
-    D --> H[Sparse feature depth]
-    E --> I[Per-frame pose]
-    F --> J[Scale alignment and gated refinement]
-    H --> J
-    G --> K[Sky rejection and field/object masks]
-    I --> L[Local field-plane estimation]
-    J --> M[Open3D TSDF fusion]
-    K --> M
+    C --> D[75 registered cameras]
+    D --> E[Undistorted overlapping views]
+    E --> F[CUDA PatchMatch depth maps]
+    E --> G[SegFormer non-sky masks]
+    F --> H[Geometric stereo fusion]
+    G --> H
+    H --> I[Dense colored points]
+    I --> J[Poisson surface]
+    J --> K[Display-mesh simplification]
+    D --> L[Calibrated view selection]
+    K --> M[Color-corrected texture atlas]
     L --> M
-    M --> N[Flat ground and bounded relief]
-    N --> O[Approximate house/tree solids]
-    D --> P[Registered-view texture samples]
-    P --> Q[Ground-clean UV atlas]
-    O --> R[GLB / PLY / JSON / reports]
-    Q --> R
-    R --> S[Three.js local viewer]
+    M --> N[GLB / PLY / JSON / reports]
+    N --> O[Three.js local viewer]
 ```
 
 ### Main components
 
 - `pipeline/cli.py` — video validation, keyframe extraction, COLMAP feature extraction/matching/mapping, run manifests, and sparse exports.
+- `pipeline/dense_mvs.py` — CUDA PatchMatch, SegFormer sky masks, geometric fusion, Poisson mesh, calibrated multi-view texture, GLB, and browser export.
 - `pipeline/pose_tracking.py` — dense frame trajectory using optical flow, 3D feature tracks, robust PnP, and registered anchors.
 - `pipeline/semantic_fusion.py` — main experimental pipeline: MoGe-2, SegFormer, sparse scale alignment, depth refinement, field leveling, TSDF fusion, object solidification, and exports.
 - `pipeline/object_models.py` — connected semantic clusters, procedural houses/trees, closed meshes, and video-color transfer.
@@ -121,7 +112,7 @@ Model weights are intentionally excluded from Git.
 | [MoGe-2 Base Normal](https://huggingface.co/Ruicheng/moge-2-vitb-normal) | Per-frame depth, validity, and geometry | MIT model repository |
 | [SegFormer B0 ADE20K](https://huggingface.co/nvidia/segformer-b0-finetuned-ade-512-512) | General semantic segmentation | Model card reports `other`; review NVIDIA/ADE20K terms before commercial use |
 | [Depth Anything 3 Small](https://huggingface.co/depth-anything/DA3-SMALL) | Optional comparison preview | Apache-2.0 code; review model-card terms |
-| COLMAP / PyCOLMAP | Sparse structure and camera anchors | See upstream project license |
+| COLMAP / PyCOLMAP | Sparse cameras, dense PatchMatch stereo, fusion, meshing, simplification, and texture projection | BSD-3-Clause |
 | Open3D | TSDF fusion and mesh processing | MIT |
 | OpenCV | Optical flow, PnP, and image processing | Apache-2.0 |
 | Trimesh | Object construction and GLB export | MIT |
@@ -131,7 +122,7 @@ The project also uses NumPy, SciPy, PyTorch, Transformers, Pillow, PyAV, FastAPI
 
 ## Requirements
 
-The tested development machine used Windows 11, Python 3.11, an NVIDIA RTX 4060 Laptop GPU with 8 GB VRAM, CUDA-enabled PyTorch, FFmpeg on `PATH`, and Git. The classical stage can run on CPU. The full-video AI stage is designed for CUDA and was tuned around the 8 GB laptop GPU. The latest 718-frame run at width 336 took about five minutes after initialization; timing varies.
+The tested development machine used Windows 11, Python 3.11, an NVIDIA RTX 4060 Laptop GPU with 8 GB VRAM, CUDA-enabled PyTorch, a CUDA-enabled COLMAP build, FFmpeg on `PATH`, and Git. The supplied dense run took about 26 minutes at a 1200-pixel maximum image dimension; timing varies.
 
 ## Installation
 
@@ -171,6 +162,26 @@ git clone --depth 1 https://github.com/ByteDance-Seed/Depth-Anything-3.git third
 ```
 
 The script downloads MoGe-2 Base Normal to `models/MoGe-2-Base`, SegFormer B0 ADE20K to `models/SegFormer-B0`, and DA3 Small to `models/DA3-SMALL`. These large downloads stay outside Git.
+
+### 4. Install a CUDA-enabled COLMAP build
+
+Download the official Windows CUDA archive from the [COLMAP releases page](https://github.com/colmap/colmap/releases), extract it under `third_party/colmap-4.0.4-cuda`, and verify:
+
+```powershell
+.\third_party\colmap-4.0.4-cuda\bin\colmap.exe -h
+```
+
+The dense command defaults to this ignored local path. Override it with `--colmap` when COLMAP is installed elsewhere.
+
+### 5. Build a dense map from a completed sparse run
+
+```powershell
+.\.venv-ai\Scripts\python.exe -m pipeline.dense_mvs outputs\YOUR_SPARSE_RUN `
+  --out outputs\YOUR_DENSE_RUN `
+  --ground-transform outputs\YOUR_GROUND_RUN\ground_transform.json
+```
+
+The SegFormer model is used only to remove sky from stereo fusion. The geometry comes from agreement across calibrated video views; it does not synthesize house or tree shapes.
 
 ## Run the application
 
