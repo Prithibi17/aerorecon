@@ -242,6 +242,18 @@ uv pip install --python .venv-gsplat\Scripts\python.exe `
 
 Every eighth calibrated view is excluded from optimization and used for validation. `validation_renders/` puts each withheld video frame beside the Gaussian render.
 
+### Optional: ground cleanup and inferred object backs
+
+```powershell
+.\.venv-ai\Scripts\python.exe -m pipeline.complete_scene --out outputs\completed-scene
+```
+
+The defaults use the example video's dense MVS, Open3D mesh, and calibrated camera dataset. For another video supply `--source`, `--dense`, and `--cameras` with matching runs. SegFormer labels are accepted only where camera depth agrees with the mesh. Multi-view sky votes, unsupported vertices, below-ground artifacts, and long stretched faces are rejected. A rigid ground fit uses observed semantic ground. Its support is reported; low support means alignment remains uncertain.
+
+Compact building and vegetation clusters receive convex closed backs down to the ground; these are approximate envelopes, not detailed generated architecture or foliage. Ground gaps are filled only near observed ground samples. A per-triangle texture atlas projects calibrated video onto observed faces, while inferred faces receive interpolated colours from the same object. Unseen photographic details are not recovered. The viewer's **Inferred backs + ground gaps** toggle separates these additions from observed geometry. The combined GLB includes both layers.
+
+Gaussian training now explicitly penalizes opacity on semantic sky, bounds Gaussian sizes, and regularizes motion away from the source mesh. Previously trained checkpoints are unchanged; these training corrections apply to new runs. Completion output is a mesh and does not require Gaussian training.
+
 ### 8. Georeference with GPS and IMU telemetry
 
 Fill the generated `telemetry_template.csv`. Image names must match the reconstruction and at least three non-collinear camera positions need latitude, longitude, and altitude. Yaw, pitch, and roll are preserved as telemetry evidence; positional alignment is solved from GPS camera centers.

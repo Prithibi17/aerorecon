@@ -4,7 +4,7 @@ import * as GaussianSplats3D from '/vendor/gaussian-splats-3d.module.js';
 
 const $ = id => document.getElementById(id);
 let runs = [], selected = null, loaded = null, currentView = 'model', framesLoaded = null;
-let scene, renderer, camera, controls, cloud, pathGroup, grid, home, surface, splats, gaussianViewer, axes;
+let scene, renderer, camera, controls, cloud, pathGroup, grid, home, surface, splats, gaussianViewer, axes, inferredSurface;
 let cloudLoading = null;
 let runListSignature = '', detailsSignature = '';
 const number = x => Number(x).toLocaleString();
@@ -52,7 +52,7 @@ function dispose(object) {
 }
 function fitView() {
   if (!home || !controls) return;
-  controls.target.copy(home.target); camera.position.copy(home.position); camera.up.set(0,1,0); controls.update();
+  controls.target.copy(home.target); camera.position.copy(home.position); camera.up.copy(home.up||new THREE.Vector3(0,1,0)); controls.update();
 }
 async function loadCloud(id) {
   if (loaded === id || cloudLoading === id) return;
@@ -62,7 +62,7 @@ async function loadCloud(id) {
     const data = await api(`/api/runs/${id}/cloud`);
     if (selected !== id) return;
     if (!renderer) throw new Error('WebGL is unavailable. Try opening the app in Chrome or Edge.');
-    if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud); dispose(pathGroup);dispose(surface);dispose(splats);surface=null;splats=null;
+    if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud); dispose(pathGroup);dispose(surface);dispose(splats);dispose(inferredSurface);inferredSurface=null;surface=null;splats=null;
     const raw = new Float32Array(data.positions);
     // Focus the main cluster so a few remote outliers do not hide the useful scene.
     // All original points remain in the renderer and the download.
@@ -96,6 +96,7 @@ async function loadCloud(id) {
     pathGroup.add(cameraPoints); pathGroup.visible = $('pathToggle').checked;scene.add(pathGroup);
 
     $('splatLayer').hidden=!data.gaussian_splats;
+    $('completionLayer').hidden=!data.completion_available;
     grid.position.y = data.ground_aligned ? -centre.y*scale-.02 : -extent.y * scale / 2 - .5;
     axes.position.set(0,grid.position.y+.03,0);
     $('viewLabel').textContent=data.ground_aligned?'Y UP (GREEN) · X RED · Z BLUE · HEADING ARBITRARY':'PERSPECTIVE';
@@ -114,6 +115,13 @@ async function loadCloud(id) {
       const videoMaterial=new THREE.MeshBasicMaterial({map:texture,vertexColors:!texture,side:THREE.DoubleSide});
       const litMaterial=new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.82,metalness:0});
       surface=new THREE.Mesh(surfaceGeo,videoMaterial);surface.userData.videoMaterial=videoMaterial;surface.userData.litMaterial=litMaterial;scene.add(surface);
+      if(Number.isInteger(surfaceData.inferred_face_start)){
+        const split=surfaceData.inferred_face_start*3;
+        const inferredGeo=surfaceGeo.clone();inferredGeo.setIndex(surfaceData.indices.slice(split));
+        surfaceGeo.setIndex(surfaceData.indices.slice(0,split));
+        inferredSurface=new THREE.Mesh(inferredGeo,videoMaterial.clone());
+        inferredSurface.visible=$('completionToggle').checked;scene.add(inferredSurface);
+      }
       surface.userData.originalColors=surfaceGeo.getAttribute('color').clone();
       if(surfaceData.semantic_colors){const sem=new Float32Array(surfaceData.semantic_colors.length);for(let i=0;i<sem.length;i+=3){color.setRGB(surfaceData.semantic_colors[i]/255,surfaceData.semantic_colors[i+1]/255,surfaceData.semantic_colors[i+2]/255,THREE.SRGBColorSpace);sem[i]=color.r;sem[i+1]=color.g;sem[i+2]=color.b;}surface.userData.semanticColors=new THREE.BufferAttribute(sem,3);}
       surface.visible=$('surfaceToggle').checked;
@@ -146,7 +154,7 @@ async function loadCloud(id) {
         const viewPosition=new THREE.Vector3((rawPosition.x-centre.x)*scale,ySign*(rawPosition.y-centre.y)*scale,-(rawPosition.z-centre.z)*scale);
         const forward=new THREE.Vector3(elements[8]*scale,elements[9]*ySign*scale,-elements[10]*scale).normalize();
         const viewUp=new THREE.Vector3(-elements[4]*scale,-elements[5]*ySign*scale,elements[6]*scale).normalize();
-        camera.up.copy(viewUp);home={position:viewPosition,target:viewPosition.clone().add(forward.multiplyScalar(Math.max(extent.x,extent.y,extent.z)*scale*.6))};
+        camera.up.copy(viewUp);home={position:viewPosition,up:viewUp,target:viewPosition.clone().add(forward.multiplyScalar(Math.max(extent.x,extent.y,extent.z)*scale*.6))};
       }
     }
     fitView();
@@ -184,7 +192,8 @@ function renderDetails(run) {
   const ai=['da3-small','moge-2'].includes(m.engine);
   const open3d=m.engine==='open3d-tsdf';
   const gsplat=m.engine==='gsplat-pytorch';
-  const photogrammetric=m.engine==='colmap-mvs'||open3d;
+  const completed=m.engine==='semantic-completion';
+  const photogrammetric=m.engine==='colmap-mvs'||open3d||completed;
   const fused=!!m.fusion&&!open3d;
   const partial=run.status==='complete'&&m.registered_ratio<.8;
   const elapsed=run.elapsed_s?(run.elapsed_s<60?`${Math.round(run.elapsed_s)} sec`:`${Math.round(run.elapsed_s/60)} min`):'';
@@ -207,6 +216,7 @@ function renderDetails(run) {
   if(ai){$('registered').textContent=m.predicted_views||'—';$('registrationRatio').textContent='Views jointly predicted';$('reprojection').textContent='DA3 Small';}
   if(photogrammetric){$('viewsLabel').textContent='REGISTERED KEYFRAMES';$('pointsExplanation').textContent='Geometrically verified multi-view points';$('qualityLabel').textContent='IMAGE FIT';$('qualityExplanation').textContent='COLMAP reprojection error';$('noticeTitle').textContent='Observed geometry · relative scale';$('noticeText').textContent='Only surfaces supported by overlapping calibrated views are shown. Missing regions are left incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
   if(open3d){$('pointsExplanation').textContent='TSDF surface vertices';$('qualityLabel').textContent='DEPTH SAMPLES';$('reprojection').textContent=number(m.valid_depth_pixels);$('qualityExplanation').textContent='Calibrated non-sky pixels fused';$('noticeTitle').textContent='Open3D fused geometry · relative scale';$('noticeText').textContent='Open3D TSDF combines COLMAP geometric depth from all registered views, removes small fragments, and smooths stereo noise. Unsupported areas remain incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
+  if(completed){$('modelBadge').textContent='OBSERVED + INFERRED COMPLETION';$('outputType').textContent='Textured mesh + inferred backs';$('geometryType').textContent='Stereo + semantic ground fit';$('qualityLabel').textContent='CLOSED OBJECT CLUSTERS';$('reprojection').textContent=`${m.closed_building_clusters} buildings · ${m.closed_vegetation_clusters} vegetation`;$('qualityExplanation').textContent='Approximate closed backs, not measured objects';$('noticeTitle').textContent='Completion is an approximation';$('noticeText').textContent='Sky and unsupported vertices are rejected. Ground is refitted from stereo-supported semantic ground. Inferred backs use colours from the same object; toggle completion off to inspect only observed geometry.';}
   if(gsplat){$('outputType').textContent='Open3D mesh + trained 3D Gaussians';$('geometryType').textContent='MVS / TSDF calibrated';$('viewsLabel').textContent='TRAIN / HOLDOUT VIEWS';$('registered').textContent=`${m.training_views} / ${m.holdout_views}`;$('registrationRatio').textContent=`${m.training_steps.toLocaleString()} PyTorch steps`;$('pointsExplanation').textContent='Optimized Gaussian primitives';$('qualityLabel').textContent='HELD-OUT PSNR';$('reprojection').textContent=`${m.holdout_psnr_db.toFixed(2)} dB`;$('qualityExplanation').textContent='Video-versus-render image fit';$('noticeTitle').textContent='Gaussian appearance · geographic alignment pending';$('noticeText').textContent='The calibrated cameras and Open3D mesh initialize the scene; gsplat optimizes appearance against non-sky video pixels. Fill the telemetry CSV with real per-frame GPS/IMU to produce metre-scale WGS84 local coordinates.';}
   if(fused){$('registered').textContent=`${m.frames_integrated||0} / ${m.frames_decoded||'…'}`;$('registrationRatio').textContent=m.coverage_percent?`${m.coverage_percent.toFixed(0)}% of video · ${m.last_timestamp_s.toFixed(2)} seconds`:'Processing every video frame';$('noticeTitle').textContent='Full-video fusion · relative scale';$('noticeText').textContent='Depth from all integrated frames contributes to one shared surface. Geometry and camera positions remain unvalidated; gaps may remain where the video provides insufficient evidence.';}
   if(m.engine==='moge-2'){$('reprojection').textContent='MoGe-2 Base';$('noticeTitle').textContent='Estimated ground plane · Y up';$('noticeText').textContent='Sky is excluded by semantic labels. A rigid rotation aligns estimated ground with X/Z, preserving height. Semantic colors: green ground, orange buildings, dark green vegetation, gray other. Coordinates use relative scale; dimensions are not metres.';}
@@ -242,8 +252,10 @@ function renderDetails(run) {
 async function selectRun(id) {
   selected=id; framesLoaded=null;loaded=null;
   detailsSignature='';
-  if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud);dispose(pathGroup);dispose(surface);dispose(splats);cloud=null;pathGroup=null;surface=null;splats=null;
+  if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud);dispose(pathGroup);dispose(surface);dispose(splats);dispose(inferredSurface);inferredSurface=null;cloud=null;pathGroup=null;surface=null;splats=null;
   $('cloudToggle').checked=true;$('surfaceToggle').checked=true;$('splatToggle').checked=true;$('pathToggle').checked=false;
+  $('completionToggle').checked=true;
+  const url=new URL(location.href);url.searchParams.set('result',id);history.replaceState(null,'',url);
   $('pointCount').textContent='— points';
   $('sourceVideo').src=`/api/runs/${id}/video`;
   renderRuns();
@@ -276,6 +288,7 @@ $('topView').onclick=()=>{if(home){camera.position.copy(home.target).add(new THR
 $('rotateView').onclick=()=>{if(controls){controls.autoRotate=!controls.autoRotate;$('rotateView').setAttribute('aria-pressed',String(controls.autoRotate));}};
 $('cloudToggle').onchange=e=>{if(cloud)cloud.visible=e.target.checked;};
 $('surfaceToggle').onchange=e=>{if(surface)surface.visible=e.target.checked;};
+$('completionToggle').onchange=e=>{if(inferredSurface)inferredSurface.visible=e.target.checked;};
 $('splatToggle').onchange=e=>{if(gaussianViewer?.splatMesh)gaussianViewer.splatMesh.visible=e.target.checked;if(splats)splats.visible=e.target.checked;};
 $('pathToggle').onchange=e=>{if(pathGroup)pathGroup.visible=e.target.checked;};
 $('gridToggle').onchange=e=>{if(grid)grid.visible=e.target.checked;};
@@ -308,7 +321,7 @@ $('uploadForm').onsubmit=async e=>{
   finally{$('submitUpload').disabled=false;$('closeDialog').disabled=false;$('submitUpload').textContent='Build 3D reconstruction →';}
 };
 async function refresh(){
-  try{runs=await api('/api/runs');renderRuns();if(!selected&&runs.length)await selectRun(runs[0].id);else{const run=runs.find(r=>r.id===selected);if(run)renderDetails(run);}
+  try{runs=await api('/api/runs');renderRuns();if(!selected&&runs.length){const requested=new URLSearchParams(location.search).get('result');await selectRun(runs.some(r=>r.id===requested)?requested:runs[0].id);}else{const run=runs.find(r=>r.id===selected);if(run)renderDetails(run);}
     if(!runs.length)message('Your next map starts here','Choose New reconstruction to upload your drone video.');
     if(!$('logs').hidden)loadLogs();if(currentView==='frames')loadFrames();
   }catch(error){message('Cannot reach the local app','The processing server may have stopped. Start AeroRecon again using Start-AeroRecon.cmd.');}

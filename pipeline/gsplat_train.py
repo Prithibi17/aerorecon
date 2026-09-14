@@ -116,6 +116,7 @@ def main():
         {"params": [parameters["means"]], "lr": 5e-4}, {"params": [parameters["quats"]], "lr": 2e-4},
         {"params": [parameters["log_scales"]], "lr": 1e-3}, {"params": [parameters["opacity_logits"]], "lr": 5e-3},
         {"params": [parameters["color_logits"]], "lr": 8e-3}], eps=1e-15)
+    anchor = parameters['means'].detach().clone()
     losses = []
     for step in range(args.steps):
         camera = train[step % len(train)]
@@ -125,8 +126,13 @@ def main():
         structural = 1 - ssim(prediction, target, mask)
         uncovered = ((1 - alpha) * mask).sum() / mask.sum().clamp_min(1)
         scale_reg = parameters["log_scales"].exp().mean() / max(extent, 1e-5)
-        loss = .78 * l1 + .2 * structural + .02 * uncovered + 1e-4 * scale_reg
+        sky = 1 - mask
+        sky_opacity = (alpha * sky).sum() / sky.sum().clamp_min(1)
+        displacement = (parameters['means'] - anchor).square().mean() / max(scale * scale, 1e-8)
+        loss = .78 * l1 + .2 * structural + .02 * uncovered + .25 * sky_opacity + .002 * displacement + 1e-4 * scale_reg
         optimizer.zero_grad(set_to_none=True); loss.backward(); optimizer.step()
+        with torch.no_grad():
+            parameters['log_scales'].clamp_(math.log(scale * .1), math.log(scale * 3))
         losses.append(float(loss.detach()))
         if step % 25 == 0 or step + 1 == args.steps:
             print(f"step {step + 1}/{args.steps} loss={losses[-1]:.5f} gaussians={len(means)}", flush=True)

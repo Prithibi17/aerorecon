@@ -114,7 +114,8 @@ def describe(path):
     if not progress and ('Recovering cameras' in tail or 'incremental_pipeline' in tail):
         stage = 'Reconstructing 3D'
     if status == 'complete':
-        stage = ('Gaussian Splat map ready' if manifest.get('engine') == 'gsplat-pytorch'
+        stage = ('Ground-aligned completed mesh ready' if manifest.get('engine') == 'semantic-completion'
+                 else 'Gaussian Splat map ready' if manifest.get('engine') == 'gsplat-pytorch'
                  else 'Open3D refined surface ready' if manifest.get('engine') == 'open3d-tsdf'
                  else 'Photogrammetric dense map ready' if manifest.get('engine') == 'colmap-mvs'
                  else 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready')
