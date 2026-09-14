@@ -70,6 +70,19 @@ def camera_source(source):
     return max(candidates,key=lambda p:p.stat().st_mtime) if candidates else None
 
 
+def stage_source(source, engine, required):
+    """Find the newest completed stage for the same source-video bytes."""
+    digest = read_json(source/'run_manifest.json').get('input_sha256')
+    candidates = []
+    if digest:
+        for path in OUTPUTS.iterdir():
+            manifest = read_json(path/'run_manifest.json')
+            if (manifest.get('status') == 'complete' and manifest.get('input_sha256') == digest
+                    and manifest.get('engine') == engine and (path/required).exists()):
+                candidates.append(path)
+    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+
 def log_path(path):
     own = path / 'worker.log'
     return own if own.exists() else ROOT / f'{path.name}.log'
@@ -101,7 +114,8 @@ def describe(path):
     if not progress and ('Recovering cameras' in tail or 'incremental_pipeline' in tail):
         stage = 'Reconstructing 3D'
     if status == 'complete':
-        stage = ('Open3D refined surface ready' if manifest.get('engine') == 'open3d-tsdf'
+        stage = ('Gaussian Splat map ready' if manifest.get('engine') == 'gsplat-pytorch'
+                 else 'Open3D refined surface ready' if manifest.get('engine') == 'open3d-tsdf'
                  else 'Photogrammetric dense map ready' if manifest.get('engine') == 'colmap-mvs'
                  else 'AI dense preview ready' if manifest.get('engine') == 'da3-small' else 'Sparse model ready')
     elif status == 'failed':
@@ -184,7 +198,7 @@ def video(identifier: str):
 
 @app.get('/api/runs/{identifier}/download/{name}')
 def download(identifier: str, name: str):
-    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_open3d.ply', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json'}
+    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_open3d.ply', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json', 'gaussians.ply', 'gaussians.pt', 'gsplat_metrics.json', 'telemetry_template.csv'}
     if name not in allowed:
         raise HTTPException(404)
     path = run_dir(identifier)/name
@@ -198,6 +212,14 @@ def surface(identifier: str):
     path = run_dir(identifier)/'surface_viewer.json'
     if not path.is_file():
         raise HTTPException(404, 'No surface is available')
+    return FileResponse(path, media_type='application/json')
+
+
+@app.get('/api/runs/{identifier}/splats')
+def splats(identifier: str):
+    path = run_dir(identifier)/'gaussians_viewer.json'
+    if not path.is_file():
+        raise HTTPException(404, 'No Gaussian splats are available')
     return FileResponse(path, media_type='application/json')
 
 
@@ -310,6 +332,33 @@ def build_ai(identifier: str):
                 [str(executable), '-m', 'pipeline.semantic_fusion', str(source), '--out', str(OUTPUTS/new_id),
                  '--resolution', '336', '--flat-field', '--solid-objects'],
                 cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return {'id': new_id, 'status': 'queued'}
+
+
+@app.post('/api/runs/{identifier}/gsplat', status_code=202)
+def build_gsplat(identifier: str):
+    source = run_dir(identifier)
+    dense = stage_source(source, 'colmap-mvs', Path('workspace')/'sparse')
+    mesh = stage_source(source, 'open3d-tsdf', Path('surface_open3d.ply'))
+    executable = ROOT/'.venv-ai/Scripts/python.exe'
+    trainer = ROOT/'.venv-gsplat/Scripts/python.exe'
+    if dense is None or mesh is None:
+        raise HTTPException(409, 'A completed dense MVS run and Open3D surface are required before Gaussian training.')
+    if not executable.exists() or not trainer.exists():
+        raise HTTPException(503, 'The Open3D and gsplat environments are not installed. Follow the README setup steps.')
+    new_id = 'gsplat-' + uuid.uuid4().hex[:12]
+    with lock:
+        if any(p.poll() is None for p in processes.values()) or any(
+            describe_unlocked_running(p) for p in OUTPUTS.iterdir() if p.is_dir()
+        ):
+            raise HTTPException(409, 'A reconstruction is already running. Wait for it to finish.')
+        with (ROOT/f'{new_id}.log').open('wb') as log:
+            processes[new_id] = subprocess.Popen(
+                [str(executable), '-m', 'pipeline.gaussian_splat', str(dense),
+                 '--mesh-run', str(mesh), '--out', str(OUTPUTS/new_id),
+                 '--trainer-python', str(trainer), '--width', '640', '--steps', '2000',
+                 '--max-gaussians', '80000'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     return {'id': new_id, 'status': 'queued'}
 

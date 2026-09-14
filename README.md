@@ -2,7 +2,7 @@
 
 Experimental, local-first reconstruction of a 3D scene from drone video.
 
-AeroRecon extracts camera motion from a video and reconstructs overlapping views with CUDA multi-view stereo. The primary output is a browser-viewable dense point cloud and a camera-projected textured mesh. Experimental monocular-depth and semantic object pipelines remain available for comparison.
+AeroRecon extracts camera motion from video, reconstructs overlapping views with CUDA multi-view stereo, refines a mesh with Open3D, and trains 3D Gaussian appearance with gsplat/PyTorch. The browser can switch between the mesh, Gaussian preview, dense points, and camera path.
 
 > [!WARNING]
 > AeroRecon is a research prototype. Its current output is **not survey-grade, metrically calibrated, georeferenced, or independently validated**. Do not use it for engineering measurements, navigation, boundaries, construction, inspection, safety decisions, or legal land records.
@@ -19,6 +19,7 @@ The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS fi
 | Classical camera reconstruction | Working with assumptions | COLMAP/PyCOLMAP registered 75/75 selected views from the full clip. Intrinsics are assumed rather than independently calibrated. |
 | Dense multi-view stereo | Working | CUDA PatchMatch and geometric consistency create observed depth and a dense colored point cloud. |
 | Open3D TSDF refinement | Working | Calibrated depth maps and RGB views fuse into a smoother surface; small fragments and non-manifold edges are removed. |
+| 3D Gaussian Splatting | Working | An Open3D surface initializes Gaussian centers; gsplat/PyTorch optimizes position, covariance, opacity, and color against calibrated non-sky frames. Held-out frames measure image fit. |
 | Semantic sky masking | Working with model limitations | SegFormer masks sky before stereo fusion so moving clouds do not become false geometry. |
 | Camera-projected mesh texture | Working with gaps | COLMAP selects calibrated source views per visible face, corrects color, and bakes a real-image atlas. |
 | Per-frame camera tracking | Working experimentally | Optical flow and PnP track the remaining 664 frames; this sample used zero interpolated poses. |
@@ -28,8 +29,8 @@ The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS fi
 | Flat-field orientation | Working as a scene prior | A shared ground plane fixes the false-mountain failure for this agricultural clip. It must be disabled for real hills or mountains. |
 | Houses and trees | Prototype | Compact semantic clusters become closed procedural solids. Their placement is evidence-based; their shape and hidden sides are inferred. |
 | Texture | Prototype | A 1024×1024 UV atlas uses registered video views. Unobserved and weakly aligned regions remain coarse or filled. |
-| Metric scale | Not implemented | Coordinates use arbitrary relative units. |
-| GPS/GCP/IMU alignment | Not implemented | The map has no latitude/longitude, surveyed control, gravity measurement, or north heading. |
+| Metric scale | Ready when telemetry is supplied | A 3D similarity fit converts relative model coordinates to metres from matched per-frame GPS. |
+| GPS/IMU alignment | Implemented; awaiting data | CSV ingestion fits a WGS84 local ENU frame, validates residuals, and transforms both mesh and Gaussian covariance. The supplied MP4 contains no telemetry. |
 | Real-world accuracy validation | Not completed | Internal consistency numbers are available; no LiDAR, RTK, surveyed distance, or withheld real-scene ground truth has been used. |
 
 ## Latest dense photogrammetry result
@@ -102,6 +103,15 @@ flowchart LR
     L --> M
     M --> N[GLB / PLY / JSON / reports]
     N --> O[Three.js local viewer]
+    H --> P[Open3D TSDF mesh]
+    D --> Q[Calibrated train / holdout views]
+    P --> R[Mesh-seeded 3D Gaussians]
+    Q --> R
+    R --> S[gsplat + PyTorch optimization]
+    S --> O
+    S --> T{GPS / IMU supplied?}
+    T -->|yes| U[WGS84 local ENU model in metres]
+    T -->|no| V[Telemetry template + relative model]
 ```
 
 ### Main components
@@ -109,6 +119,9 @@ flowchart LR
 - `pipeline/cli.py` — video validation, keyframe extraction, COLMAP feature extraction/matching/mapping, run manifests, and sparse exports.
 - `pipeline/dense_mvs.py` — CUDA PatchMatch, SegFormer sky masks, geometric fusion, Poisson mesh, calibrated multi-view texture, GLB, and browser export.
 - `pipeline/open3d_refine.py` — calibrated RGBD integration, scalable TSDF extraction, component cleanup, Taubin smoothing, decimation, and colored GLB/browser export.
+- `pipeline/gaussian_splat.py` — calibrated sky-masked dataset export, Open3D mesh initialization, training orchestration, reports, and telemetry template.
+- `pipeline/gsplat_train.py` — CUDA Gaussian rasterization and PyTorch optimization with held-out PSNR validation and standard Gaussian PLY export.
+- `pipeline/georeference.py` — per-image GPS matching, WGS84 ECEF/local ENU conversion, similarity fitting, residual validation, and metric mesh/Gaussian export.
 - `pipeline/pose_tracking.py` — dense frame trajectory using optical flow, 3D feature tracks, robust PnP, and registered anchors.
 - `pipeline/semantic_fusion.py` — main experimental pipeline: MoGe-2, SegFormer, sparse scale alignment, depth refinement, field leveling, TSDF fusion, object solidification, and exports.
 - `pipeline/object_models.py` — connected semantic clusters, procedural houses/trees, closed meshes, and video-color transfer.
@@ -131,9 +144,11 @@ Model weights are intentionally excluded from Git.
 | [Depth Anything 3 Small](https://huggingface.co/depth-anything/DA3-SMALL) | Optional comparison preview | Apache-2.0 code; review model-card terms |
 | COLMAP / PyCOLMAP | Sparse cameras, dense PatchMatch stereo, fusion, meshing, simplification, and texture projection | BSD-3-Clause |
 | Open3D | TSDF fusion and mesh processing | MIT |
+| [gsplat](https://docs.gsplat.studio/) | Differentiable CUDA Gaussian rasterization | Apache-2.0 |
 | OpenCV | Optical flow, PnP, and image processing | Apache-2.0 |
 | Trimesh | Object construction and GLB export | MIT |
 | Three.js | Local interactive viewer | MIT |
+| [GaussianSplats3D](https://github.com/mkkellogg/GaussianSplats3D) | Depth-sorted browser rendering of Gaussian PLY files | MIT |
 
 The project also uses NumPy, SciPy, PyTorch, Transformers, Pillow, PyAV, FastAPI, Uvicorn, and psutil. Review all upstream licenses and the licenses of any datasets or weights before redistribution or commercial use.
 
@@ -210,6 +225,35 @@ The SegFormer model is used only to remove sky from stereo fusion. The geometry 
 
 The default 0.015 voxel length and three Taubin smoothing iterations were tested on the supplied clip. Smaller voxels preserve more detail but increase memory use and noise.
 
+### 7. Train 3D Gaussian Splatting appearance
+
+The official Windows gsplat wheel currently requires a separate Python 3.10 / PyTorch 2.4 / CUDA 12.4 environment:
+
+```powershell
+uv venv --python 3.10 .venv-gsplat
+uv pip install --python .venv-gsplat\Scripts\python.exe torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu124
+uv pip install --python .venv-gsplat\Scripts\python.exe `
+  "https://github.com/nerfstudio-project/gsplat/releases/download/v1.5.3/gsplat-1.5.3%2Bpt24cu124-cp310-cp310-win_amd64.whl" `
+  plyfile packaging setuptools
+
+.\.venv-ai\Scripts\python.exe -m pipeline.gaussian_splat outputs\YOUR_DENSE_RUN `
+  --mesh-run outputs\YOUR_OPEN3D_RUN --out outputs\YOUR_GSPLAT_RUN
+```
+
+Every eighth calibrated view is excluded from optimization and used for validation. `validation_renders/` puts each withheld video frame beside the Gaussian render.
+
+### 8. Georeference with GPS and IMU telemetry
+
+Fill the generated `telemetry_template.csv`. Image names must match the reconstruction and at least three non-collinear camera positions need latitude, longitude, and altitude. Yaw, pitch, and roll are preserved as telemetry evidence; positional alignment is solved from GPS camera centers.
+
+```powershell
+.\.venv-ai\Scripts\python.exe -m pipeline.georeference outputs\YOUR_GSPLAT_RUN `
+  --telemetry outputs\YOUR_GSPLAT_RUN\telemetry_template.csv `
+  --out outputs\YOUR_GEOREFERENCED_RUN
+```
+
+The result uses metres in a WGS84 local east/north/up frame anchored at one recorded camera. `georeference.json` records the anchor, transform, scale, and GPS residuals. The command rejects weak geometry or a median alignment error above 10 m by default.
+
 ## Run the application
 
 Double-click `Start-AeroRecon.cmd` or run:
@@ -218,7 +262,7 @@ Double-click `Start-AeroRecon.cmd` or run:
 .\.venv\Scripts\python.exe -m uvicorn pipeline.server:app --host 127.0.0.1 --port 8765
 ```
 
-Open <http://127.0.0.1:8765>. Use **New reconstruction** to upload an MP4, MOV, M4V, AVI, or MKV file up to 1 GB. When the camera stage completes, select the run and use **Build full-video map**.
+Open <http://127.0.0.1:8765>. Use **New reconstruction** to upload an MP4, MOV, M4V, AVI, or MKV file up to 1 GB. When the camera stage completes, select the run and use **Build full-video map**. After dense MVS and Open3D outputs exist for that video, **Train Gaussian map** launches the calibrated 2,000-step gsplat job from the interface.
 
 The server binds to loopback and rejects cross-origin mutation requests. Uploaded videos and outputs remain in ignored local folders.
 
@@ -240,6 +284,10 @@ Use `--no-flat-field` for terrain that is not expected to be planar. Never enabl
 | File | Purpose |
 | --- | --- |
 | `surface.glb` | Final textured triangle mesh with the atlas embedded. |
+| `gaussians.ply` | Standard 3D Gaussian Splat with covariance, opacity, and color coefficients. |
+| `gaussians.pt` | Trainable PyTorch parameters for continued optimization. |
+| `telemetry_template.csv` | Per-image GPS/IMU input template for metric geographic alignment. |
+| `validation_renders/` | Held-out video frames beside novel-view Gaussian renders. |
 | `surface_full.ply` | Final surface in PLY form. |
 | `dense.ply` | Colored point representation of final vertices. |
 | `texture.png` | Generated texture atlas. |

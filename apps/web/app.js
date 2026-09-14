@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
+import * as GaussianSplats3D from '/vendor/gaussian-splats-3d.module.js';
 
 const $ = id => document.getElementById(id);
 let runs = [], selected = null, loaded = null, currentView = 'model', framesLoaded = null;
-let scene, renderer, camera, controls, cloud, pathGroup, grid, home, surface, axes;
+let scene, renderer, camera, controls, cloud, pathGroup, grid, home, surface, splats, gaussianViewer, axes;
 let cloudLoading = null;
 let runListSignature = '', detailsSignature = '';
 const number = x => Number(x).toLocaleString();
@@ -42,7 +43,7 @@ function setupScene() {
     renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix();
   };
   new ResizeObserver(resize).observe($('canvasHost')); resize();
-  renderer.setAnimationLoop(() => { if (currentView === 'model') { controls.update(); renderer.render(scene, camera); } });
+  renderer.setAnimationLoop(() => { if (currentView === 'model') { controls.update();if(gaussianViewer){gaussianViewer.update();gaussianViewer.render();}else renderer.render(scene, camera); } });
 }
 function dispose(object) {
   if (!object) return;
@@ -61,7 +62,7 @@ async function loadCloud(id) {
     const data = await api(`/api/runs/${id}/cloud`);
     if (selected !== id) return;
     if (!renderer) throw new Error('WebGL is unavailable. Try opening the app in Chrome or Edge.');
-    dispose(cloud); dispose(pathGroup);dispose(surface);surface=null;
+    if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud); dispose(pathGroup);dispose(surface);dispose(splats);surface=null;splats=null;
     const raw = new Float32Array(data.positions);
     // Focus the main cluster so a few remote outliers do not hide the useful scene.
     // All original points remain in the renderer and the download.
@@ -93,6 +94,8 @@ async function loadCloud(id) {
     pathGroup.add(line);
     const cameraPoints = new THREE.Points(new THREE.BufferGeometry().setFromPoints(centres), new THREE.PointsMaterial({color:0xafffe2,size:5,sizeAttenuation:false}));
     pathGroup.add(cameraPoints); pathGroup.visible = $('pathToggle').checked;scene.add(pathGroup);
+
+    $('splatLayer').hidden=!data.gaussian_splats;
     grid.position.y = data.ground_aligned ? -centre.y*scale-.02 : -extent.y * scale / 2 - .5;
     axes.position.set(0,grid.position.y+.03,0);
     $('viewLabel').textContent=data.ground_aligned?'Y UP (GREEN) · X RED · Z BLUE · HEADING ARBITRARY':'PERSPECTIVE';
@@ -122,6 +125,30 @@ async function loadCloud(id) {
       const distance=Math.max(size.x,size.y,size.z);
       home={target:surfaceCentre,position:surfaceCentre.clone().add(new THREE.Vector3(.45,.85,.95).multiplyScalar(distance))};
     }
+    if(data.gaussian_splats){
+      gaussianViewer=new GaussianSplats3D.Viewer({selfDrivenMode:false,renderer,camera,threeScene:scene,useBuiltInControls:false,
+        gpuAcceleratedSort:false,sharedMemoryForWorkers:false,enableSIMDInSort:false,integerBasedSort:true,halfPrecisionCovariancesOnGPU:true,dynamicScene:false,
+        renderMode:GaussianSplats3D.RenderMode.Always,sceneRevealMode:GaussianSplats3D.SceneRevealMode.Instant,
+        sphericalHarmonicsDegree:0,antialiased:true,showLoadingUI:false});
+      const splatLoad=gaussianViewer.addSplatScene(`/api/runs/${id}/download/gaussians.ply`,{splatAlphaRemovalThreshold:5,
+        position:[-centre.x*scale,-ySign*centre.y*scale,centre.z*scale],rotation:[0,0,0,1],scale:[scale,ySign*scale,-scale],showLoadingUI:false});
+      // Some embedded browsers never signal completion from the optional splat-tree worker,
+      // even though the sorted GPU scene is already ready and visible.
+      splatLoad.catch(error=>console.warn('Gaussian background indexing did not finish:',error));
+      await Promise.race([splatLoad,new Promise(resolve=>setTimeout(resolve,4000))]);
+      if(selected!==id)return;$('surfaceToggle').checked=false;surface.visible=false;$('cloudToggle').checked=false;cloud.visible=false;
+      gaussianViewer.splatMesh.visible=$('splatToggle').checked;
+      const evidenceCamera=data.cameras[Math.floor(data.cameras.length/2)];
+      if(evidenceCamera?.world_to_camera){
+        const cameraToWorld=new THREE.Matrix4().set(...evidenceCamera.world_to_camera.flat()).invert();
+        const elements=cameraToWorld.elements;
+        const rawPosition=new THREE.Vector3(elements[12],elements[13],elements[14]);
+        const viewPosition=new THREE.Vector3((rawPosition.x-centre.x)*scale,ySign*(rawPosition.y-centre.y)*scale,-(rawPosition.z-centre.z)*scale);
+        const forward=new THREE.Vector3(elements[8]*scale,elements[9]*ySign*scale,-elements[10]*scale).normalize();
+        const viewUp=new THREE.Vector3(-elements[4]*scale,-elements[5]*ySign*scale,elements[6]*scale).normalize();
+        camera.up.copy(viewUp);home={position:viewPosition,target:viewPosition.clone().add(forward.multiplyScalar(Math.max(extent.x,extent.y,extent.z)*scale*.6))};
+      }
+    }
     fitView();
     const activeRun=runs.find(run=>run.id===id);
     if(activeRun?.metrics?.solid_house_models!==undefined)$('colorMode').value='rgb';
@@ -148,6 +175,7 @@ function renderRuns() {
 }
 function renderDetails(run) {
   $('buildAI').disabled=run.status!=='complete'||runs.some(r=>r.status==='running');
+  $('trainGsplat').disabled=run.status!=='complete'||runs.some(r=>r.status==='running');
   const signature=JSON.stringify(run);
   if(signature===detailsSignature){if(run.status==='complete')loadCloud(run.id);return;}
   detailsSignature=signature;
@@ -155,14 +183,15 @@ function renderDetails(run) {
   const m=run.metrics;
   const ai=['da3-small','moge-2'].includes(m.engine);
   const open3d=m.engine==='open3d-tsdf';
+  const gsplat=m.engine==='gsplat-pytorch';
   const photogrammetric=m.engine==='colmap-mvs'||open3d;
   const fused=!!m.fusion&&!open3d;
   const partial=run.status==='complete'&&m.registered_ratio<.8;
   const elapsed=run.elapsed_s?(run.elapsed_s<60?`${Math.round(run.elapsed_s)} sec`:`${Math.round(run.elapsed_s/60)} min`):'';
   $('projectSubtitle').textContent = `${m.calibration_suspect?'Unreliable geometry — calibration failed':partial?'Partial sparse model ready':run.stage} · ${run.synthetic?'Ideal synthetic scene':'Drone video'}${elapsed?' · '+elapsed+' processing':''}`;
-  $('modelBadge').textContent=open3d?'OPEN3D TSDF':photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':m.calibration_suspect?'UNRELIABLE GEOMETRY':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
+  $('modelBadge').textContent=gsplat?'PYTORCH 3D GAUSSIANS':open3d?'OPEN3D TSDF':photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':m.calibration_suspect?'UNRELIABLE GEOMETRY':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
   $('modelBadge').style.color=ai||partial||m.calibration_suspect||m.intrinsics_fixed?'var(--orange)':'';
-  $('surfaceLayer').hidden=!(ai||photogrammetric);
+  $('surfaceLayer').hidden=!(ai||photogrammetric||gsplat);$('splatLayer').hidden=!gsplat;
   $('outputType').textContent=open3d?'Open3D refined surface':photogrammetric?'Dense verified point cloud':fused?'Full-video fused surface':ai?'AI depth + dense cloud':'Sparse point cloud';
   $('geometryType').textContent=open3d?'Calibrated TSDF':photogrammetric?'Multi-view stereo':ai?'AI-inferred':'Estimated';
   $('noticeTitle').textContent=ai?'AI preview, not a measured map':'Scale is not calibrated';
@@ -178,6 +207,7 @@ function renderDetails(run) {
   if(ai){$('registered').textContent=m.predicted_views||'—';$('registrationRatio').textContent='Views jointly predicted';$('reprojection').textContent='DA3 Small';}
   if(photogrammetric){$('viewsLabel').textContent='REGISTERED KEYFRAMES';$('pointsExplanation').textContent='Geometrically verified multi-view points';$('qualityLabel').textContent='IMAGE FIT';$('qualityExplanation').textContent='COLMAP reprojection error';$('noticeTitle').textContent='Observed geometry · relative scale';$('noticeText').textContent='Only surfaces supported by overlapping calibrated views are shown. Missing regions are left incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
   if(open3d){$('pointsExplanation').textContent='TSDF surface vertices';$('qualityLabel').textContent='DEPTH SAMPLES';$('reprojection').textContent=number(m.valid_depth_pixels);$('qualityExplanation').textContent='Calibrated non-sky pixels fused';$('noticeTitle').textContent='Open3D fused geometry · relative scale';$('noticeText').textContent='Open3D TSDF combines COLMAP geometric depth from all registered views, removes small fragments, and smooths stereo noise. Unsupported areas remain incomplete. GPS, GCPs, or a known distance are still needed for metric scale.';}
+  if(gsplat){$('outputType').textContent='Open3D mesh + trained 3D Gaussians';$('geometryType').textContent='MVS / TSDF calibrated';$('viewsLabel').textContent='TRAIN / HOLDOUT VIEWS';$('registered').textContent=`${m.training_views} / ${m.holdout_views}`;$('registrationRatio').textContent=`${m.training_steps.toLocaleString()} PyTorch steps`;$('pointsExplanation').textContent='Optimized Gaussian primitives';$('qualityLabel').textContent='HELD-OUT PSNR';$('reprojection').textContent=`${m.holdout_psnr_db.toFixed(2)} dB`;$('qualityExplanation').textContent='Video-versus-render image fit';$('noticeTitle').textContent='Gaussian appearance · geographic alignment pending';$('noticeText').textContent='The calibrated cameras and Open3D mesh initialize the scene; gsplat optimizes appearance against non-sky video pixels. Fill the telemetry CSV with real per-frame GPS/IMU to produce metre-scale WGS84 local coordinates.';}
   if(fused){$('registered').textContent=`${m.frames_integrated||0} / ${m.frames_decoded||'…'}`;$('registrationRatio').textContent=m.coverage_percent?`${m.coverage_percent.toFixed(0)}% of video · ${m.last_timestamp_s.toFixed(2)} seconds`:'Processing every video frame';$('noticeTitle').textContent='Full-video fusion · relative scale';$('noticeText').textContent='Depth from all integrated frames contributes to one shared surface. Geometry and camera positions remain unvalidated; gaps may remain where the video provides insufficient evidence.';}
   if(m.engine==='moge-2'){$('reprojection').textContent='MoGe-2 Base';$('noticeTitle').textContent='Estimated ground plane · Y up';$('noticeText').textContent='Sky is excluded by semantic labels. A rigid rotation aligns estimated ground with X/Z, preserving height. Semantic colors: green ground, orange buildings, dark green vegetation, gray other. Coordinates use relative scale; dimensions are not metres.';}
   if(m.aerial_corrector_frames!==undefined){$('qualityLabel').textContent='TRAINED CORRECTOR';$('reprojection').textContent=`${m.aerial_corrector_frames} / ${m.frames_integrated} frames`;$('qualityExplanation').textContent='Accepted only when held-out feature geometry improved';}
@@ -187,7 +217,7 @@ function renderDetails(run) {
   if(m.solid_house_models!==undefined){$('qualityLabel').textContent=m.texture_atlas?'PHOTO TEXTURE':'OBJECT MODELS';$('reprojection').textContent=m.texture_atlas?`${m.texture_atlas.resolution} × ${m.texture_atlas.resolution} atlas`:`${m.solid_house_models} houses + ${m.solid_tree_models} trees`;$('qualityExplanation').textContent=m.texture_atlas?`${number(m.texture_atlas.samples)} aligned video samples`:`Closed solids placed from ${m.frames_integrated} tracked video frames`;$('noticeTitle').textContent=m.texture_atlas?'Video texture atlas · approximate geometry':'Video-coloured objects · approximate dimensions';$('noticeText').textContent=m.texture_atlas?'A photographic texture is baked from aligned frames and applied to the 3D surface. Upward-facing visible areas carry the strongest detail. Vertical and hidden faces remain inferred because the flight does not observe every side.':'Visible house and tree colours are transferred from matching video observations. Generated walls, roofs, trunks, and hidden sides remain approximate because the video has no GPS, calibration, or complete side views. Use the colour menu to inspect semantic classes.';}
   const ready=run.status==='complete';
   $('downloadCloud').classList.toggle('disabled',!ready);$('downloadCloud').setAttribute('aria-disabled',String(!ready));
-  $('downloadCloud').href=`/api/runs/${run.id}/download/${ai||photogrammetric?'dense':'sparse'}.ply`;
+  $('downloadCloud').href=`/api/runs/${run.id}/download/${gsplat?'gaussians':ai||photogrammetric?'dense':'sparse'}.ply`;
   $('exports').replaceChildren();
   for (const [file,label] of [['camera_centres.csv','Camera positions'],['REPORT.md','Reconstruction report'],['metrics.json','Quality statistics']]) {
     const link=document.createElement('a');link.textContent=label;const arrow=document.createElement('span');arrow.textContent='↓';link.append(arrow);
@@ -195,6 +225,7 @@ function renderDetails(run) {
   }
   if(ai){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent=fused?'Fused surface (GLB) ↓':'AI depth surface (GLB) ↓';$('exports').append(link);}
   if(photogrammetric){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/surface.glb`;link.textContent=open3d?'Open3D surface (GLB) ↓':'Calibrated textured mesh (GLB) ↓';$('exports').append(link);}
+  if(gsplat){for(const [file,label] of [['gaussians.ply','3D Gaussian Splat (PLY)'],['gaussians.pt','PyTorch checkpoint'],['telemetry_template.csv','GPS + IMU template'],['gsplat_metrics.json','Gaussian validation']]){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/${file}`;link.textContent=`${label} ↓`;$('exports').append(link);}}
   if(fused){const link=document.createElement('a');link.href=`/api/runs/${run.id}/download/frames.csv`;link.textContent='Every-frame coverage (CSV) ↓';$('exports').append(link);}
   const pipelineProgress=run.progress||{};
   const stages=fused?['Decode every frame','Shared camera alignment','Multi-view fusion','Combined surface']:ai?['Video check','AI depth','Backprojection','Dense preview']:(pipelineProgress.stages||['Video analysis','Keyframe selection','Feature extraction','Frame matching','Sparse reconstruction','Quality report']);
@@ -211,8 +242,8 @@ function renderDetails(run) {
 async function selectRun(id) {
   selected=id; framesLoaded=null;loaded=null;
   detailsSignature='';
-  dispose(cloud);dispose(pathGroup);dispose(surface);cloud=null;pathGroup=null;surface=null;
-  $('cloudToggle').checked=true;$('surfaceToggle').checked=true;$('pathToggle').checked=false;
+  if(gaussianViewer){await gaussianViewer.dispose();gaussianViewer=null;}dispose(cloud);dispose(pathGroup);dispose(surface);dispose(splats);cloud=null;pathGroup=null;surface=null;splats=null;
+  $('cloudToggle').checked=true;$('surfaceToggle').checked=true;$('splatToggle').checked=true;$('pathToggle').checked=false;
   $('pointCount').textContent='— points';
   $('sourceVideo').src=`/api/runs/${id}/video`;
   renderRuns();
@@ -245,6 +276,7 @@ $('topView').onclick=()=>{if(home){camera.position.copy(home.target).add(new THR
 $('rotateView').onclick=()=>{if(controls){controls.autoRotate=!controls.autoRotate;$('rotateView').setAttribute('aria-pressed',String(controls.autoRotate));}};
 $('cloudToggle').onchange=e=>{if(cloud)cloud.visible=e.target.checked;};
 $('surfaceToggle').onchange=e=>{if(surface)surface.visible=e.target.checked;};
+$('splatToggle').onchange=e=>{if(gaussianViewer?.splatMesh)gaussianViewer.splatMesh.visible=e.target.checked;if(splats)splats.visible=e.target.checked;};
 $('pathToggle').onchange=e=>{if(pathGroup)pathGroup.visible=e.target.checked;};
 $('gridToggle').onchange=e=>{if(grid)grid.visible=e.target.checked;};
 $('pointSize').oninput=e=>{$('pointSizeValue').value=e.target.value;if(cloud)cloud.material.size=Number(e.target.value);};
@@ -255,6 +287,11 @@ $('buildAI').onclick=async()=>{
   if(!selected)return;$('buildAI').disabled=true;
   try{const result=await api(`/api/runs/${selected}/ai`,{method:'POST',headers:{'X-AeroRecon':'local'}});notify('AI reconstruction is starting on your GPU.');setTimeout(async()=>{await refresh();if(runs.some(r=>r.id===result.id))selectRun(result.id);},1500);}
   catch(error){notify(error.message);$('buildAI').disabled=false;}
+};
+$('trainGsplat').onclick=async()=>{
+  if(!selected)return;$('trainGsplat').disabled=true;
+  try{const result=await api(`/api/runs/${selected}/gsplat`,{method:'POST',headers:{'X-AeroRecon':'local'}});notify('Gaussian training is starting on your GPU.');setTimeout(async()=>{await refresh();if(runs.some(r=>r.id===result.id))selectRun(result.id);},1500);}
+  catch(error){notify(error.message);$('trainGsplat').disabled=false;}
 };
 $('videoFile').onchange=()=>{$('fileName').textContent=$('videoFile').files[0]?.name||'Choose or drop a video';};
 for(const event of ['dragenter','dragover'])$('dropzone').addEventListener(event,()=> $('dropzone').classList.add('dragging'));

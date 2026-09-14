@@ -6,7 +6,7 @@ Scope: every first-party source, test, script, dependency manifest, launcher, an
 
 ## Executive finding
 
-AeroRecon is a working local research prototype with a real COLMAP structure-from-motion stage, a browser viewer, immutable run artifacts, per-frame pose tracking, monocular depth, semantic masks, TSDF fusion, and exports. It is not yet a survey-grade mapping system. Its sparse camera reconstruction is evidence-based; its dense surface, object shapes, field leveling, and textures combine measured evidence with strong assumptions. It has no telemetry ingestion, metric scale solution, geographic reference system, classical dense multi-view stereo, independent accuracy report, multi-flight project model, or defensible cross-flight merge logic.
+AeroRecon is a working local research prototype with COLMAP structure from motion and dense multi-view stereo, semantic sky masks, Open3D TSDF mesh refinement, gsplat/PyTorch 3D Gaussian training, held-out image validation, browser viewing, and optional GPS/IMU CSV georeferencing. It is not yet a survey-grade mapping system. Camera geometry and MVS depth are evidence-based, while weakly observed surfaces remain incomplete. The current example video has no telemetry, so its output still has relative scale. The system also lacks GCP/checkpoint accuracy reporting, a multi-flight project model, and defensible cross-flight merge logic.
 
 The safest development path is to make the classical photogrammetry path reliable and observable first, then add scale/georeferencing, dense MVS, cleanup, semantic assistance, and multi-flight alignment. AI depth should fill weak areas and aid masking; it should not define camera geometry or override consistent photogrammetry.
 
@@ -26,7 +26,7 @@ The safest development path is to make the classical photogrammetry path reliabl
 | `pipeline/object_models.py` | Turns semantic clusters into closed house/tree solids | Procedural approximation, not reconstruction of actual roofs, walls, branches, or trunks. |
 | `pipeline/texture_atlas.py` | Bakes top-down photographic color evidence | Useful preview. Not a calibrated multi-view texture unwrap; vertical and hidden surfaces are inferred. |
 | `pipeline/train_aerial_corrector.py` | Trains a small depth residual corrector | Real training code, but current training/validation evidence is synthetic-domain only. |
-| `apps/web/` | Upload, run list, progress, Three.js viewer, layers, exports | Working interface. Phase 1 now consumes explicit stages. No telemetry, project/session, map, GCP, or multi-flight controls. |
+| `apps/web/` | Upload, run list, progress, Three.js/Gaussian viewer, layers, exports | Working interface. It can view and launch Gaussian training, and exports a GPS/IMU template. Project/session, map, GCP, and multi-flight controls remain absent. |
 | `scripts/` | Synthetic generation/checks, calibration audit, model download, run naming | Useful developer utilities. Synthetic validation does not establish real-world accuracy. |
 | `tests/` | Geometry math, tracking, API controls, extraction, object helpers | Good regression base. Optional AI tests depend on the AI environment/models. No real aerial benchmark suite. |
 
@@ -114,7 +114,7 @@ There is no first-class project/session database, session transform, global reco
 
 | Dependency/model | Role | Current concern |
 |---|---|---|
-| PyCOLMAP/COLMAP | Sparse SfM and camera calibration | Correct foundation. Dense COLMAP/OpenMVS integration is absent. |
+| PyCOLMAP/COLMAP | Sparse SfM, camera calibration, and CUDA dense MVS | Correct geometric foundation; output quality still depends on overlap, texture, and camera calibration. |
 | OpenCV | Video/image metrics, features, PnP, geometry | Appropriate; algorithm thresholds need aerial validation. |
 | PyAV/FFmpeg | Video decoding | Appropriate; metadata/telemetry parsing remains minimal. |
 | Open3D | TSDF and mesh operations | Appropriate for prototypes; memory and scale limits need profiling. |
