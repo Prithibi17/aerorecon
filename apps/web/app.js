@@ -111,7 +111,7 @@ async function loadCloud(id) {
       for(let i=0;i<vertexColors.length;i+=3){color.setRGB(surfaceData.colors[i]/255,surfaceData.colors[i+1]/255,surfaceData.colors[i+2]/255,THREE.SRGBColorSpace);vertexColors[i]=color.r;vertexColors[i+1]=color.g;vertexColors[i+2]=color.b;}
       const surfaceGeo=new THREE.BufferGeometry();surfaceGeo.setAttribute('position',new THREE.BufferAttribute(vertices,3));surfaceGeo.setAttribute('color',new THREE.BufferAttribute(vertexColors,3));surfaceGeo.setIndex(surfaceData.indices);surfaceGeo.computeVertexNormals();
       let texture=null;
-      if(surfaceData.texture&&surfaceData.uv){surfaceGeo.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(surfaceData.uv),2));texture=await new THREE.TextureLoader().loadAsync(`/api/runs/${id}/download/${surfaceData.texture}`);texture.colorSpace=THREE.SRGBColorSpace;}
+      if(surfaceData.texture&&surfaceData.uv){surfaceGeo.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(surfaceData.uv),2));texture=await new THREE.TextureLoader().loadAsync(`/api/runs/${id}/download/${surfaceData.texture}`);texture.colorSpace=THREE.SRGBColorSpace;texture.generateMipmaps=false;texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;}
       const videoMaterial=new THREE.MeshBasicMaterial({map:texture,vertexColors:!texture,side:THREE.DoubleSide});
       const litMaterial=new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.82,metalness:0});
       surface=new THREE.Mesh(surfaceGeo,videoMaterial);surface.userData.videoMaterial=videoMaterial;surface.userData.litMaterial=litMaterial;scene.add(surface);

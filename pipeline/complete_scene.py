@@ -87,7 +87,9 @@ def run(args):
                 logits=model(**inputs).logits
                 label=torch.nn.functional.interpolate(logits,size=rgb.shape[:2],mode='bilinear',align_corners=False).argmax(1)[0].cpu().numpy()
             groups=lookup[label]
-            sky=cv2.dilate((groups==4).astype(np.uint8),np.ones((3,3),np.uint8))>0
+            # Horizon silhouettes have unstable stereo depth and create distant walls.
+            # Exclude a conservative band around sky, not only labelled sky pixels.
+            sky=cv2.dilate((groups==4).astype(np.uint8),np.ones((17,17),np.uint8))>0
             groups[sky]=4
             depth=read_colmap_array(dense/'workspace/stereo/depth_maps'/f"{camera['name']}.geometric.bin")
             depth=cv2.resize(depth,(camera['width'],camera['height']),interpolation=cv2.INTER_NEAREST)
@@ -106,8 +108,8 @@ def run(args):
             if index%10==0: print(f'Semantic/depth visibility {index+1}/{len(cameras)}',flush=True)
         del model; torch.cuda.empty_cache()
         semantic=votes.argmax(1)
-        supported=votes[:,:4].sum(1)>=2
-        keep=supported&(sky_votes/np.maximum(in_view,1)<.15)&(semantic!=4)
+        supported=votes[:,:4].sum(1)>=5
+        keep=supported&(sky_votes/np.maximum(in_view,1)<.03)&(semantic!=4)
         ground=keep&(semantic==1)
         rotation, origin, support=fit_ground(vertices[ground])
         aligned=(vertices-origin)@rotation.T
@@ -115,6 +117,13 @@ def run(args):
         # is flattened only in the explicitly inferred completion layer.
         keep &= aligned[:,1]>-.09
         observed_faces=faces[np.all(keep[faces],axis=1)]
+        triangle_points=aligned[observed_faces]
+        normals=np.cross(triangle_points[:,1]-triangle_points[:,0],triangle_points[:,2]-triangle_points[:,0])
+        verticality=np.abs(normals[:,1])/np.maximum(np.linalg.norm(normals,axis=1),1e-10)
+        ground_face=(semantic[observed_faces]==1).sum(1)>=2
+        ground_wall=ground_face&(verticality<.55)
+        rejected_ground_walls=int(ground_wall.sum())
+        observed_faces=observed_faces[~ground_wall]
         span=np.ptp(aligned[keep][:,[0,2]],axis=0).max()
         triangles=aligned[observed_faces]
         longest=np.max(np.linalg.norm(triangles-np.roll(triangles,1,axis=1),axis=2),axis=1)
@@ -144,19 +153,36 @@ def run(args):
                     additions.append(item); count+=1
             counts[name]=count
         # Fill only near observed ground; this avoids an invented giant rectangular field.
-        ground_points=aligned[ground&keep]
-        ground_colors=colors[ground&keep]
+        # Preserve the footprint of all supported ground, including ground below
+        # the uncertain fitted plane. Its planar replacement is explicitly inferred.
+        ground_points=aligned[ground]
+        ground_colors=colors[ground]
         cell=max(span/160,.04)
         low=ground_points[:,[0,2]].min(0); high=ground_points[:,[0,2]].max(0)
         gx,gz=np.meshgrid(np.arange(low[0],high[0]+cell,cell),np.arange(low[1],high[1]+cell,cell))
         query=np.column_stack([gx.ravel(),gz.ravel()])
         distance,nearest=cKDTree(ground_points[:,[0,2]]).query(query)
         grid=np.column_stack([query[:,0],np.zeros(len(query)),query[:,1]])
+        grid_raw=grid@rotation+origin
+        # Appearance on the uncertain plane is inferred from local 3D samples.
+        # Camera projection here would stretch oblique pixels across large gaps.
+        distances,neighbors=cKDTree(ground_points[:,[0,2]]).query(query,k=min(8,len(ground_points)))
+        weights=1/np.maximum(distances,cell*.3)**2
+        grid_colors=np.clip((ground_colors[neighbors]*weights[...,None]).sum(1)/weights.sum(1)[:,None],0,255).astype(np.uint8)
+        grid_votes=np.zeros(len(grid),int)
+        for rgb,groups,depth,T,K in views:
+            cp=grid_raw@T[:3,:3].T+T[:3,3]; projected=cp@K.T
+            pixel=np.rint(np.clip(projected[:,:2]/np.maximum(projected[:,2:],1e-8),-1e6,1e6)).astype(int)
+            valid=(cp[:,2]>0)&(pixel[:,0]>=1)&(pixel[:,0]<rgb.shape[1]-1)&(pixel[:,1]>=1)&(pixel[:,1]<rgb.shape[0]-1)
+            ids=np.flatnonzero(valid); x,y=pixel[ids].T
+            ids=ids[groups[y,x]==1]
+            grid_votes[ids]+=1
         height,width=gx.shape
         a=(np.arange(height-1)[:,None]*width+np.arange(width-1)).ravel()
         triangles=np.concatenate([np.column_stack([a,a+width,a+1]),np.column_stack([a+1,a+width,a+width+1])])
-        triangles=triangles[np.all((distance<cell*3)[triangles],axis=1)]
-        ground_mesh=trimesh.Trimesh(grid,triangles,vertex_colors=ground_colors[nearest],process=False)
+        fill=(grid_votes>=3)|(distance<cell*3)
+        triangles=triangles[np.all(fill[triangles],axis=1)]
+        ground_mesh=trimesh.Trimesh(grid,triangles,vertex_colors=grid_colors,process=False)
         ground_mesh.remove_unreferenced_vertices(); additions.insert(0,ground_mesh)
         combined=trimesh.util.concatenate([observed,*additions])
         # Bake a per-triangle atlas. Observed triangles use a calibrated, depth-checked
@@ -186,8 +212,12 @@ def run(args):
                 raw_face=face@rotation+origin; cp=raw_face@T[:3,:3].T+T[:3,3]; p=cp@K.T; src=(p[:,:2]/p[:,2:]).astype(np.float32)
                 sx=np.rint(src[:,0]).astype(int); sy=np.rint(src[:,1]).astype(int)
                 if np.all(cp[:,2]>0) and np.all((sx>=0)&(sx<rgb.shape[1])&(sy>=0)&(sy<rgb.shape[0])) and np.all(groups[sy,sx]!=4):
-                    patch=cv2.warpAffine(rgb,cv2.getAffineTransform(src,dst),(tile,tile),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
-                    photo_faces+=1
+                    affine=cv2.getAffineTransform(src,dst)
+                    warped_sky=cv2.warpAffine((groups==4).astype(np.uint8),affine,(tile,tile),flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT,borderValue=1)
+                    interior=(xx>=2)&(yy>=2)&(xx+yy<=tile-1)
+                    if not warped_sky[interior].any():
+                        patch=cv2.warpAffine(rgb,affine,(tile,tile),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
+                        photo_faces+=1
             x=(i%columns)*tile; y=(i//columns)*tile
             atlas[y:y+tile,x:x+tile]=np.clip(patch,0,255).astype(np.uint8)
             uv_out[i,:,0]=(dst[:,0]+x+.5)/atlas.shape[1]
@@ -211,6 +241,9 @@ def run(args):
                  'registered_ratio':1.,'rejected_vertices':int((~keep).sum()),'ground_plane_support':support,
                  'observed_faces':len(observed.faces),'inferred_faces':total-len(observed.faces),'photo_textured_faces':photo_faces,
                  'closed_building_clusters':counts['building'],'closed_vegetation_clusters':counts['vegetation'],
+                 'ground_faces':len(ground_mesh.faces),'ground_grid_camera_supported':int((grid_votes>=3).sum()),
+                 'horizon_mask_dilation_pixels':17,'minimum_supporting_views':5,
+                 'rejected_steep_ground_faces':rejected_ground_walls,
                  'geometry_validated':False,'units':'arbitrary'}
         save_json(out/'metrics.json',metrics)
         save_json(out/'alignment.json',{'rotation':rotation.tolist(),'origin':origin.tolist(),'ground_support':support})

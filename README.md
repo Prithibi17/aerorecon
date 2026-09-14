@@ -254,6 +254,8 @@ Compact building and vegetation clusters receive convex closed backs down to the
 
 Gaussian training now explicitly penalizes opacity on semantic sky, bounds Gaussian sizes, and regularizes motion away from the source mesh. Previously trained checkpoints are unchanged; these training corrections apply to new runs. Completion output is a mesh and does not require Gaussian training.
 
+The completion cleanup dilates semantic sky with a 17-pixel kernel in the 640-pixel training views and requires five depth-supporting views. This can remove legitimate distant silhouettes as well as horizon artifacts. Steep triangles labelled as ground are excluded to suppress ground-depth walls. Ground completion preserves the footprint of supported ground below the uncertain fitted plane and adds planar patches where at least three camera views label ground. Those patches use nearby ground colours, avoiding stretched video projections on an uncertain plane. They are inferred, not measured terrain. Photographic texture patches reject sky across their triangular interiors; the viewer disables atlas mipmaps to prevent neighbouring triangle patches bleeding together at a distance.
+
 ### 8. Georeference with GPS and IMU telemetry
 
 Fill the generated `telemetry_template.csv`. Image names must match the reconstruction and at least three non-collinear camera positions need latitude, longitude, and altitude. Yaw, pitch, and roll are preserved as telemetry evidence; positional alignment is solved from GPS camera centers.
