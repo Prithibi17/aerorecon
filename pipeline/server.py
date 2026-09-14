@@ -199,7 +199,7 @@ def video(identifier: str):
 
 @app.get('/api/runs/{identifier}/download/{name}')
 def download(identifier: str, name: str):
-    allowed = {'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_open3d.ply', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json', 'gaussians.ply', 'gaussians.pt', 'gsplat_metrics.json', 'telemetry_template.csv'}
+    allowed = {'capture_diagnostics.json', 'sparse.ply', 'dense.ply', 'dense_raw.ply', 'mesh_raw.ply', 'surface.glb', 'surface_open3d.ply', 'surface_full.ply', 'texture.png', 'depth_evidence.npz', 'camera_centres.csv', 'frames.csv', 'metrics.json', 'REPORT.md', 'run_manifest.json', 'video_analysis.json', 'keyframe_selection.json', 'keyframe_contact_sheet.jpg', 'camera_configuration.json', 'gaussians.ply', 'gaussians.pt', 'gsplat_metrics.json', 'telemetry_template.csv'}
     if name not in allowed:
         raise HTTPException(404)
     path = run_dir(identifier)/name

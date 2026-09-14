@@ -17,6 +17,21 @@ PARAMETER_COUNTS = {
 }
 
 
+def write_capture_diagnostics(output: Path) -> dict:
+    """Record verified-pair degeneracy even when no 3D model can initialize."""
+    import sqlite3
+    import pycolmap as pc
+    names={int(value):name for name,value in pc.TwoViewGeometryConfiguration.__members__.items()}
+    with sqlite3.connect(f"{(output/'database.db').resolve().as_uri()}?mode=ro",uri=True) as database:
+        rows=database.execute('SELECT config,COUNT(*),MIN(rows),MAX(rows) FROM two_view_geometries WHERE rows>0 GROUP BY config').fetchall()
+    result={'verified_pairs':sum(row[1] for row in rows),
+            'configurations':[{'type':names.get(row[0],str(row[0])), 'pairs':row[1],
+                               'min_matches':row[2], 'max_matches':row[3]} for row in rows],
+            'interpretation':'Planar/panoramic pairs can have many matches without enough observable depth. These labels alone do not prove camera motion or surface accuracy.'}
+    save_json(output/'capture_diagnostics.json',result)
+    return result
+
+
 @dataclass(frozen=True)
 class CameraConfig:
     model: str = "SIMPLE_RADIAL"
@@ -67,8 +82,11 @@ def reconstruct(
     if progress:
         progress.update("Feature extraction", .05, "Extracting local SIFT features")
     try:
+        extraction = pc.FeatureExtractionOptions()
+        extraction.num_threads = 4
+        extraction.max_image_size = 2000
         pc.extract_features(database, output / "keyframes", camera_mode=pc.CameraMode.SINGLE,
-                            reader_options=reader, device=pc.Device.cpu)
+                            reader_options=reader, extraction_options=extraction, device=pc.Device.cpu)
     except Exception as exc:
         raise RuntimeError(f"COLMAP feature extraction failed: {exc}") from exc
     if progress:
@@ -118,6 +136,9 @@ def reconstruct(
     except Exception as exc:
         raise RuntimeError(f"COLMAP sparse reconstruction failed: {exc}") from exc
     if not models:
+        diagnostics=write_capture_diagnostics(output)
+        import json
+        (output/'REPORT.md').write_text('# Camera reconstruction failed\n\nNo connected camera model initialized. Dense MVS and calibrated Gaussian training cannot proceed from this run.\n\n'+json.dumps(diagnostics,indent=2)+'\n\nUse footage with camera translation and overlapping views, plus independently verified calibration where available. Do not substitute a flat or invented surface for a measured reconstruction.\n',encoding='utf-8')
         raise RuntimeError("No connected camera model was recovered. Check the contact sheet for blur, ensure 70–85% overlap, and provide calibrated intrinsics when available.")
     best_id, model = max(models.items(), key=lambda pair: pair[1].num_reg_images())
     model.export_PLY(output / "sparse.ply")

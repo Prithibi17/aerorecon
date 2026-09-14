@@ -157,7 +157,7 @@ def main():
     cameras_out = [{"name": c["name"], "centre": c["centre"], "world_to_camera": c["world_to_camera"]} for c in cameras]
     cloud = {**viewer, "cameras": cameras_out, "total_points": len(means), "displayed_points": len(keep),
              "units": "arbitrary", "geometry_provenance": "gsplat/PyTorch optimized appearance",
-             "surface_available": True, "gaussian_splats": True, "ground_aligned": True}
+             "surface_available": True, "gaussian_splats": True, "ground_aligned": dataset.get('ground_aligned', dataset.get('coordinate_system')=='ground-aligned-relative')}
     (out / "viewer.json").write_text(json.dumps(cloud, separators=(",", ":")), encoding="utf-8")
     metrics = {"training_steps": args.steps, "gaussians": len(means), "viewer_gaussians": len(keep),
                "training_views": len(train), "holdout_views": len(holdout), "holdout_psnr_db": psnr,

@@ -86,8 +86,10 @@ def prepare_dataset(dense: Path, mesh_run: Path, output: Path, width: int, max_p
         take = np.linspace(0, len(vertices) - 1, max_points, dtype=np.int64)
         vertices, colors = vertices[take], colors[take]
     np.savez_compressed(output / "training" / "initial_gaussians.npz", means=vertices, colors=colors)
+    ground_aligned = bool(mesh_manifest.get('metrics', {}).get('ground_aligned', False))
     dataset = {"schema": "aerorecon.gsplat-dataset/v1", "cameras": cameras,
-               "initial_points": len(vertices), "coordinate_system": "ground-aligned-relative",
+               "initial_points": len(vertices), "coordinate_system": "ground-aligned-relative" if ground_aligned else "colmap-relative",
+               "ground_aligned": ground_aligned,
                "source_mesh": str(mesh_run / "surface_open3d.ply")}
     save_json(output / "training" / "dataset.json", dataset)
     return dataset
@@ -151,7 +153,7 @@ def run(args) -> None:
                    "registered_images": len(dataset["cameras"]), "selected_images": len(dataset["cameras"]),
                    "registered_ratio": 1.0, "points": train_metrics["gaussians"],
                    "displayed_points": train_metrics["viewer_gaussians"], "surface_available": True,
-                   "ground_aligned": True, "gaussian_splats": True, **train_metrics,
+                   "ground_aligned": dataset['ground_aligned'], "gaussian_splats": True, **train_metrics,
                    "geometry_validated": False, "units": "arbitrary", "scale_state": "relative",
                    "georeference_state": "awaiting telemetry"}
         save_json(output / "metrics.json", metrics)

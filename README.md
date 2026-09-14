@@ -4,14 +4,64 @@ Experimental, local-first reconstruction of a 3D scene from drone video.
 
 AeroRecon extracts camera motion from video, reconstructs overlapping views with CUDA multi-view stereo, refines a mesh with Open3D, and trains 3D Gaussian appearance with gsplat/PyTorch. The browser can switch between the mesh, Gaussian preview, dense points, and camera path.
 
+## SIH26158: presentation and AI judge preparation
+
+**Problem statement ID supplied by the team: SIH26158.** Its exact official title, sponsoring organisation, team name and institutional details have not been verified/supplied. Do not substitute a guessed problem statement. The [presentation and judge-preparation briefing](docs/SIH_PITCH_AND_JUDGE_PREP.md) contains slide-ready content, component explanations, a training/validation plan, likely judge questions with defensible answer guidance, and a copy-paste AI mock-judge prompt.
+
+Suggested content to place into the current official SIH template:
+
+| Content block | What to present |
+|---|---|
+| Problem | SIH26158's exact stakeholder need and why a shared 3D scene is useful; insert official wording when confirmed. |
+| Solution | Local video upload → useful keyframes → camera recovery → dense geometry → mesh/Gaussian preview → exports and quality reports. |
+| Technical approach | COLMAP/PyCOLMAP, CUDA MVS, SegFormer masks, Open3D TSDF, gsplat/PyTorch, Three.js; optional GPS similarity alignment. |
+| Team contribution | Integration, viewer, artifact tracking, filtering, inferred completion and validation experiments; credit upstream algorithms/models. |
+| Evidence | Actual run tables below, RTX 4060 Laptop GPU, saved demo and reports. Report failures as well as successes. |
+| Impact and next steps | Candidate visual-inspection use; validate using calibrated captures, real controls and independent checkpoints before deployment. |
+
+**Scene-specific training is not a general trained mapping AI.** gsplat fits one scene's Gaussian parameters; SegFormer/MoGe remain pretrained models. A good render or low reprojection error does not establish correct terrain, dimensions, GPS alignment or unseen surfaces. IMU fields are retained as telemetry evidence; full visual-inertial fusion is not implemented.
+
+Copy this prompt into an AI together with this README, the briefing and run reports:
+
+```text
+Act as a Smart India Hackathon mock judge for AeroRecon, problem ID SIH26158.
+Use only the attached evidence. Do not invent the official problem title or claim
+successful training, accuracy, deployment, or novelty absent from the reports.
+Distinguish pretrained inference, scene-specific Gaussian optimisation, geometric
+reconstruction, and inferred completion. Generate 30 likely questions, ranked by
+difficulty, with concise evidence-based answers and harder follow-ups. Include sky
+walls, missing ground, texture smearing, mountain parallax, metric scale, GPS/IMU,
+hardware, feasibility and data rights. Then ask me one question at a time; score my
+answer for clarity, correctness and evidence and help improve it. Mark unknowns.
+These are practice questions, not a prediction of the actual jury. Prepare slide
+content only in the official template I provide; leave missing details as placeholders.
+```
+
+The [official college guidelines](https://sih.gov.in/letters/Guidelines-College-SPOC.pdf) available at this URL refer to an older edition. Obtain current rules and the exact statement from the [SIH portal](https://sih.gov.in/) or your SPOC.
+
 > [!WARNING]
 > AeroRecon is a research prototype. Its current output is **not survey-grade, metrically calibrated, georeferenced, or independently validated**. Do not use it for engineering measurements, navigation, boundaries, construction, inspection, safety decisions, or legal land records.
 
 ## Current state
 
+### Mountain video test — 14 September 2026
+
+Input: `12438510_3840_2160_24fps.mp4`, 3840×2160, approximately 23.976 FPS, 13.096 seconds. No GPS/IMU metadata was found in the inspected MP4 container. Mountain processing did **not** use the agricultural flat-field prior or object/ground completion.
+
+| Attempt | Camera input | Result |
+|---|---|---|
+| `mountain-sfm-v1` | 8 selected frames; 17 verified pairs | No connected camera model; all verified pairs classified PLANAR_OR_PANORAMIC; 106.3 s |
+| `mountain-sfm-v2` | 27 frames covering 0.000–13.013 s; exhaustive matching of 351 pairs | No connected camera model; all 351 pairs classified PLANAR_OR_PANORAMIC; 760.9 s |
+
+The second attempt found 9,350–10,764 verified correspondences per pair, so feature count was not the primary problem. These diagnostics are consistent with insufficient useful depth parallax from highly similar distant views. They do not uniquely establish the physical camera motion. Intrinsics were estimated, not independently calibrated.
+
+**Training outcome: blocked before dense reconstruction. No mountain MVS mesh, Gaussian training checkpoint, or mountain validation PSNR was produced.** Training a fabricated depth sheet would repeat earlier geometry errors. Use a clip with clear lateral/forward camera translation and overlapping views of the same nearby terrain, ideally with original camera calibration and matched telemetry. More frames from the same viewpoint do not create missing depth information.
+
+The local run folders retain keyframes, input hashes, failure reports, and `capture_diagnostics.json`. A source-independent account of the test is in [the mountain experiment report](docs/MOUNTAIN_EXPERIMENT.md). Gaussian export now preserves whether coordinates are actually ground-aligned; unaligned mountain runs are not automatically labelled Y-up. Future CPU SIFT extraction is capped at four threads and 2000-pixel working image size to reduce 4K memory pressure; the two attempts above predate that cap.
+
 The current primary path uses content-aware keyframes sampled across the complete video, COLMAP sparse camera recovery, CUDA PatchMatch stereo, geometric depth fusion, SegFormer sky masks, Poisson meshing, and calibrated multi-view texture projection. See [the full codebase audit](docs/CODEBASE_AUDIT.md) for an evidence-based description of what is real, approximate, missing, and planned.
 
-The end-to-end workflow runs on the supplied 28.72-second, 1920×1080, 25 FPS field video and processes all 718 decoded frames.
+The field video is 28.72 seconds, 1920×1080, 25 FPS. The experimental all-frame depth path processes all 718 decoded frames; the classical MVS and Gaussian paths use selected registered keyframes. These are separate experiments, not a claim that MVS trains on every frame.
 
 | Capability | State | What it means |
 | --- | --- | --- |
@@ -429,7 +479,7 @@ See OpenDroneMap's [flight planning guidance](https://docs.opendronemap.org/flyi
   tests.test_object_models tests.test_depth_refinement tests.test_pose_tracking
 ```
 
-Current classical/server result: 22 tests passed and 5 optional AI-environment tests were skipped. The Phase 1 synthetic end-to-end validation registered 24/24 cameras with 12,683 sparse points and 0.243 px mean reprojection error. The previously documented AI geometry suite passed 10 tests in the AI environment.
+Current classical/server result (14 September 2026): 25 tests passed and 6 tests were skipped; skipped optional dependencies are not validated by this run. The Phase 1 synthetic end-to-end validation registered 24/24 cameras with 12,683 sparse points and 0.243 px mean reprojection error. The previously documented AI geometry suite passed 10 tests in the AI environment.
 
 ## Repository policy
 
