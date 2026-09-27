@@ -87,6 +87,12 @@ async function loadCloud(id) {
     geometry.setAttribute('position', new THREE.BufferAttribute(pos,3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors,3));
     cloud = new THREE.Points(geometry, new THREE.PointsMaterial({size:Number($('pointSize').value),sizeAttenuation:false,vertexColors:true}));
+    cloud.userData.originalColors = geometry.getAttribute('color').clone();
+    if(data.semantic_colors?.length===data.colors.length){
+      const sem=new Float32Array(data.semantic_colors.length);
+      for(let i=0;i<sem.length;i+=3){color.setRGB(data.semantic_colors[i]/255,data.semantic_colors[i+1]/255,data.semantic_colors[i+2]/255,THREE.SRGBColorSpace);sem[i]=color.r;sem[i+1]=color.g;sem[i+2]=color.b;}
+      cloud.userData.semanticColors=new THREE.BufferAttribute(sem,3);
+    }
     cloud.visible = $('cloudToggle').checked; scene.add(cloud);
     pathGroup = new THREE.Group();
     const centres = data.cameras.map(c => new THREE.Vector3((c.centre[0]-centre.x)*scale,ySign*(c.centre[1]-centre.y)*scale,-(c.centre[2]-centre.z)*scale));
@@ -293,7 +299,7 @@ $('splatToggle').onchange=e=>{if(gaussianViewer?.splatMesh)gaussianViewer.splatM
 $('pathToggle').onchange=e=>{if(pathGroup)pathGroup.visible=e.target.checked;};
 $('gridToggle').onchange=e=>{if(grid)grid.visible=e.target.checked;};
 $('pointSize').oninput=e=>{$('pointSizeValue').value=e.target.value;if(cloud)cloud.material.size=Number(e.target.value);};
-$('colorMode').onchange=e=>{if(surface){surface.geometry.setAttribute('color',e.target.value==='semantic'&&surface.userData.semanticColors?surface.userData.semanticColors:surface.userData.originalColors);surface.material=e.target.value==='rgb'?surface.userData.videoMaterial:surface.userData.litMaterial;surface.material.needsUpdate=true;}if(cloud){cloud.material.vertexColors=e.target.value==='rgb';cloud.material.color.set(e.target.value==='rgb'?0xffffff:0x70ebc5);cloud.material.needsUpdate=true;}};
+$('colorMode').onchange=e=>{if(surface){surface.geometry.setAttribute('color',e.target.value==='semantic'&&surface.userData.semanticColors?surface.userData.semanticColors:surface.userData.originalColors);surface.material=e.target.value==='rgb'?surface.userData.videoMaterial:surface.userData.litMaterial;surface.material.needsUpdate=true;}if(cloud){cloud.geometry.setAttribute('color',e.target.value==='semantic'&&cloud.userData.semanticColors?cloud.userData.semanticColors:cloud.userData.originalColors);cloud.material.vertexColors=e.target.value!=='mint';cloud.material.color.set(e.target.value==='mint'?0x70ebc5:0xffffff);cloud.material.needsUpdate=true;}};
 $('toggleLogs').onclick=()=>{$('logs').hidden=!$('logs').hidden;$('toggleLogs').textContent=$('logs').hidden?'Show log ↓':'Hide log ↑';$('toggleLogs').setAttribute('aria-expanded',String(!$('logs').hidden));if(!$('logs').hidden)loadLogs();};
 $('newRun').onclick=()=>$('uploadDialog').showModal();$('closeDialog').onclick=()=>$('uploadDialog').close();
 $('buildAI').onclick=async()=>{

@@ -16,6 +16,7 @@ import trimesh
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
 
 from pipeline.cli_support import save_json
+from pipeline.detail_semantics import NAMES, COLORS, COARSE, label_lookup, tiled_probabilities, consensus, scaled_intrinsics
 from pipeline.open3d_refine import read_colmap_array
 from pipeline.semantic_fusion import ground_rotation
 
@@ -58,7 +59,10 @@ def run(args):
     manifest = {**source_manifest, 'engine':'semantic-completion', 'status':'running',
                 'pid':os.getpid(), 'started_at':started,
                 'display_name':'Ground-aligned scene · optional completed backs',
-                'configuration':{'source':str(source), 'dense':str(dense)},
+                'configuration':{'source':str(source), 'dense':str(dense),
+                    'semantic_width':args.semantic_width,'semantic_tile':args.semantic_tile,
+                    'semantic_overlap':args.semantic_overlap,'semantic_confidence':args.semantic_confidence,
+                    'observed_face_budget':args.observed_face_budget},
                 'metrics':{}, 'elapsed_s':0,
                 'warnings':['Closed backs and ground gap filling are inferred. Relative scale; no GPS or metric accuracy.']}
     save_json(out/'run_manifest.json', manifest)
@@ -71,29 +75,41 @@ def run(args):
         cameras = dataset['cameras']
         processor = SegformerImageProcessor.from_pretrained('models/SegFormer-B0',local_files_only=True)
         model = SegformerForSemanticSegmentation.from_pretrained('models/SegFormer-B0',local_files_only=True).cuda().eval()
-        lookup = np.zeros(150, np.uint8)
-        for key, name in model.config.id2label.items():
-            lookup[int(key)] = (4 if name=='sky' else 1 if name in {'road','earth','grass','field','path','land','sand'}
-                                else 2 if name in {'building','house','wall','skyscraper'} else 3 if name in {'tree','plant','palm'} else 0)
+        lookup = label_lookup(model.config.id2label)
+        detail_votes = np.zeros((len(vertices), len(NAMES)), np.uint16)
+
+        def predict(rgb):
+            with torch.inference_mode():
+                inputs = processor(images=Image.fromarray(rgb), return_tensors='pt').to('cuda')
+                logits = model(**inputs).logits
+                # Aggregate probabilities before upsampling to bound crop memory.
+                probability = logits.softmax(1)
+                grouped = torch.stack([probability[:, np.flatnonzero(lookup == k)].sum(1)
+                                       for k in range(len(NAMES))], dim=1)
+                return torch.nn.functional.interpolate(grouped, size=rgb.shape[:2],
+                    mode='bilinear', align_corners=False)[0].permute(1,2,0).cpu().numpy()
         votes = np.zeros((len(vertices),5), np.uint16)
         sky_votes = np.zeros(len(vertices), np.uint16)
         in_view = np.zeros(len(vertices), np.uint16)
         views=[]
         for index, camera in enumerate(cameras):
             rgb = np.asarray(Image.open(dense/'workspace/images'/camera['name']).convert('RGB'))
-            rgb = cv2.resize(rgb,(camera['width'],camera['height']),interpolation=cv2.INTER_AREA)
-            with torch.inference_mode():
-                inputs=processor(images=Image.fromarray(rgb),return_tensors='pt').to('cuda')
-                logits=model(**inputs).logits
-                label=torch.nn.functional.interpolate(logits,size=rgb.shape[:2],mode='bilinear',align_corners=False).argmax(1)[0].cpu().numpy()
-            groups=lookup[label]
+            scale = min(1., args.semantic_width / rgb.shape[1])
+            rgb = cv2.resize(rgb, (round(rgb.shape[1]*scale), round(rgb.shape[0]*scale)), interpolation=cv2.INTER_AREA)
+            probabilities = tiled_probabilities(rgb, predict, args.semantic_tile, args.semantic_overlap)
+            detail = probabilities.argmax(2).astype(np.uint8)
+            detail[probabilities.max(2) < args.semantic_confidence] = 0
+            # Sky is excluded even when its confidence is below the detail threshold.
+            detail[probabilities.argmax(2) == 4] = 4
+            groups = COARSE[detail]
             # Horizon silhouettes have unstable stereo depth and create distant walls.
             # Exclude a conservative band around sky, not only labelled sky pixels.
             sky=cv2.dilate((groups==4).astype(np.uint8),np.ones((17,17),np.uint8))>0
             groups[sky]=4
             depth=read_colmap_array(dense/'workspace/stereo/depth_maps'/f"{camera['name']}.geometric.bin")
-            depth=cv2.resize(depth,(camera['width'],camera['height']),interpolation=cv2.INTER_NEAREST)
-            transform=np.asarray(camera['world_to_camera']); K=np.asarray(camera['K'])
+            depth=cv2.resize(depth,(rgb.shape[1],rgb.shape[0]),interpolation=cv2.INTER_NEAREST)
+            transform=np.asarray(camera['world_to_camera'])
+            K=scaled_intrinsics(camera['K'],camera['width'],camera['height'],rgb.shape[1],rgb.shape[0])
             camera_points=vertices@transform[:3,:3].T+transform[:3,3]
             xy=camera_points@K.T
             pixel=np.rint(np.clip(xy[:,:2]/np.maximum(xy[:,2:],1e-8),-1e6,1e6)).astype(int)
@@ -104,9 +120,11 @@ def run(args):
             supported=(z>0)&(np.abs(z-camera_points[ids,2])<np.maximum(.04,z*.025))
             ids=ids[supported]; x,y=pixel[ids].T
             votes[ids,groups[y,x]]+=1
+            detail_votes[ids,detail[y,x]]+=1
             views.append((rgb,groups,depth,transform,K))
             if index%10==0: print(f'Semantic/depth visibility {index+1}/{len(cameras)}',flush=True)
         del model; torch.cuda.empty_cache()
+        detail_labels=consensus(detail_votes)
         semantic=votes.argmax(1)
         supported=votes[:,:4].sum(1)>=5
         keep=supported&(sky_votes/np.maximum(in_view,1)<.03)&(semantic!=4)
@@ -130,10 +148,10 @@ def run(args):
         observed_faces=observed_faces[longest<max(span*.025,.15)]
         observed=trimesh.Trimesh(aligned,observed_faces,vertex_colors=colors,process=False)
         observed.remove_unreferenced_vertices()
-        if len(observed.faces)>60000:
+        if args.observed_face_budget and len(observed.faces)>args.observed_face_budget:
             reduced=o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(observed.vertices),o3d.utility.Vector3iVector(observed.faces))
             reduced.vertex_colors=o3d.utility.Vector3dVector(np.asarray(observed.visual.vertex_colors)[:,:3]/255)
-            reduced=reduced.simplify_quadric_decimation(60000)
+            reduced=reduced.simplify_quadric_decimation(args.observed_face_budget)
             observed=trimesh.Trimesh(np.asarray(reduced.vertices),np.asarray(reduced.triangles),vertex_colors=np.asarray(reduced.vertex_colors)*255,process=False)
         additions=[]; counts={}
         span=np.ptp(aligned[keep][:,[0,2]],axis=0).max()
@@ -222,27 +240,37 @@ def run(args):
             atlas[y:y+tile,x:x+tile]=np.clip(patch,0,255).astype(np.uint8)
             uv_out[i,:,0]=(dst[:,0]+x+.5)/atlas.shape[1]
             uv_out[i,:,1]=1-(dst[:,1]+y+.5)/atlas.shape[0]
+        _, semantic_nearest=cKDTree(aligned[keep]).query(expanded)
+        exported_labels=detail_labels[keep][semantic_nearest]
+        exported_labels[len(observed.faces)*3:]=0  # Never label invented backs as observed detections.
         image=Image.fromarray(atlas); image.save(out/'texture.png')
         exported=trimesh.Trimesh(expanded,np.arange(len(expanded)).reshape(-1,3),process=False)
         exported.visual=trimesh.visual.texture.TextureVisuals(uv=uv_out.reshape(-1,2),image=image)
         exported.export(out/'surface.glb')
         save_json(out/'surface_viewer.json',{'positions':expanded.ravel().tolist(),'indices':np.arange(len(expanded)).tolist(),
                   'colors':np.full(expanded.shape,255,np.uint8).ravel().tolist(),'uv':uv_out.ravel().tolist(),'texture':'texture.png',
-                  'inferred_face_start':len(observed.faces),'geometry_provenance':'Stereo-supported observed mesh plus optional inferred closure'})
+                  'semantic_colors':COLORS[exported_labels].ravel().tolist(),
+                  'semantic_classes':list(NAMES),'inferred_face_start':len(observed.faces),'geometry_provenance':'Stereo-supported observed mesh plus optional inferred closure'})
         aligned_cameras=[{'name':c['name'],'centre':((np.asarray(c['centre'])-origin)@rotation.T).tolist()} for c in cameras]
         with (out/'camera_centres.csv').open('w',newline='',encoding='utf-8') as stream:
             writer=csv.writer(stream);writer.writerow(['image','x','y','z'])
             writer.writerows([c['name'],*c['centre']] for c in aligned_cameras)
         save_json(out/'viewer.json',{'positions':aligned[keep].ravel().tolist(),'colors':colors[keep].ravel().tolist(),
+                  'semantic_colors':COLORS[detail_labels[keep]].ravel().tolist(),'semantic_classes':list(NAMES),
                   'cameras':aligned_cameras,'ground_aligned':True,'surface_available':True,'completion_available':True,
                   'total_points':int(keep.sum()),'displayed_points':int(keep.sum()),'units':'arbitrary'})
         trimesh.points.PointCloud(aligned[keep],colors[keep]).export(out/'dense.ply')
+        save_json(out/'semantic_details.json', {'classes':list(NAMES),
+            'observed_vertex_counts':{name:int(((detail_labels==i)&keep).sum()) for i,name in enumerate(NAMES)},
+            'minimum_label_views':2,'minimum_label_agreement':.6,
+            'note':'Surface labels, not instance counts. Low vegetation is a plant/bush proxy; moving vehicles are not validated static geometry.'})
         metrics={'engine':'semantic-completion','points':int(keep.sum()),'registered_images':len(cameras),'selected_images':len(cameras),
                  'registered_ratio':1.,'rejected_vertices':int((~keep).sum()),'ground_plane_support':support,
                  'observed_faces':len(observed.faces),'inferred_faces':total-len(observed.faces),'photo_textured_faces':photo_faces,
                  'closed_building_clusters':counts['building'],'closed_vegetation_clusters':counts['vegetation'],
                  'ground_faces':len(ground_mesh.faces),'ground_grid_camera_supported':int((grid_votes>=3).sum()),
-                 'horizon_mask_dilation_pixels':17,'minimum_supporting_views':5,
+                 'semantic_width':args.semantic_width,'semantic_tile':args.semantic_tile,
+                 'observed_face_budget':args.observed_face_budget,'horizon_mask_dilation_pixels':17,'minimum_supporting_views':5,
                  'rejected_steep_ground_faces':rejected_ground_walls,
                  'geometry_validated':False,'units':'arbitrary'}
         save_json(out/'metrics.json',metrics)
@@ -265,4 +293,12 @@ if __name__=='__main__':
     parser.add_argument('--dense',default='outputs/drone-photogrammetry-dense')
     parser.add_argument('--cameras',default='outputs/drone-gsplat-v2')
     parser.add_argument('--out',required=True)
-    run(parser.parse_args())
+    parser.add_argument('--semantic-width',type=int,default=1280)
+    parser.add_argument('--semantic-tile',type=int,default=512)
+    parser.add_argument('--semantic-overlap',type=int,default=128)
+    parser.add_argument('--semantic-confidence',type=float,default=.45)
+    parser.add_argument('--observed-face-budget',type=int,default=120000,help='0 preserves all observed triangles; higher values cost atlas memory')
+    args=parser.parse_args()
+    if args.semantic_width<32 or args.semantic_tile<32 or not 0<=args.semantic_overlap<args.semantic_tile or not 0<=args.semantic_confidence<=1 or args.observed_face_budget<0:
+        parser.error('Invalid detail resolution, overlap, confidence or face budget')
+    run(args)

@@ -96,7 +96,10 @@ def run(args) -> None:
         "units": "arbitrary", "georeferenced": False,
         "configuration": {"source_run": str(source), "voxel_length": args.voxel_length,
                           "sdf_trunc": args.sdf_trunc, "depth_scale": args.depth_scale,
-                          "ground_transform": args.ground_transform},
+                          "ground_transform": args.ground_transform,
+                          "min_component_triangles":args.min_component_triangles,
+                          "smooth_iterations":args.smooth_iterations,
+                          "target_triangles":args.target_triangles},
         "warnings": ["Relative scale: no telemetry, GCP, or known distance was supplied.",
                      "Open3D fuses calibrated observed depth; weakly observed and occluded surfaces may remain incomplete."],
     }
@@ -256,7 +259,15 @@ def main() -> None:
     parser.add_argument("--smooth-iterations", type=int, default=3)
     parser.add_argument("--target-triangles", type=int, default=250000)
     parser.add_argument("--viewer-points", type=int, default=300000)
-    run(parser.parse_args())
+    parser.add_argument('--detail',action='store_true',help='Preserve smaller components and edges; increases memory and may retain stereo noise')
+    args=parser.parse_args()
+    if args.detail:
+        args.voxel_length=min(args.voxel_length,.0075)
+        args.sdf_trunc=min(args.sdf_trunc,.03)
+        args.min_component_triangles=min(args.min_component_triangles,20)
+        args.smooth_iterations=min(args.smooth_iterations,1)
+        args.target_triangles=max(args.target_triangles,500000)
+    run(args)
 
 
 if __name__ == "__main__":

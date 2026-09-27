@@ -4,6 +4,10 @@ Experimental, local-first reconstruction of a 3D scene from drone video.
 
 AeroRecon extracts camera motion from video, reconstructs overlapping views with CUDA multi-view stereo, refines a mesh with Open3D, and trains 3D Gaussian appearance with gsplat/PyTorch. The browser can switch between the mesh, Gaussian preview, dense points, and camera path.
 
+## Small-object detail update
+
+The reconstruction code now supports overlapping semantic crops, separate vehicle/building/tree/low-vegetation/field labels, a larger observed mesh budget, and an Open3D detail preset. See [settings, validation status and limitations](docs/SMALL_DETAILS.md). New labels require regenerating the scene; no improved video reconstruction has yet been validated with this update.
+
 ## SIH26158: presentation and AI judge preparation
 
 **Problem statement ID supplied by the team: SIH26158.** Its exact official title, sponsoring organisation, team name and institutional details have not been verified/supplied. Do not substitute a guessed problem statement. The [presentation and judge-preparation briefing](docs/SIH_PITCH_AND_JUDGE_PREP.md) contains slide-ready content, component explanations, a training/validation plan, likely judge questions with defensible answer guidance, and a copy-paste AI mock-judge prompt.
