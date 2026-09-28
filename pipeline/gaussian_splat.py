@@ -19,6 +19,7 @@ import pycolmap
 
 from pipeline.cli_support import save_json
 from pipeline.progress import ProgressWriter
+from pipeline.geometry_contract import mesh_coordinates, rigid_matrix
 
 
 STAGES = ("Calibrated image set", "Open3D mesh initialization", "PyTorch Gaussian training", "Quality validation", "Georeference check")
@@ -26,23 +27,17 @@ STAGES = ("Calibrated image set", "Open3D mesh initialization", "PyTorch Gaussia
 
 def aligned_world_matrix(transform_path: Path | None) -> np.ndarray:
     result = np.eye(4, dtype=np.float64)
-    if not transform_path or not transform_path.is_file():
+    if not transform_path:
         return result
     data = json.loads(transform_path.read_text(encoding="utf-8"))
-    rotation = np.asarray(data["rotation"], dtype=np.float64)
-    origin = np.asarray(data["origin"], dtype=np.float64)
-    result[:3, :3] = rotation
-    result[:3, 3] = -rotation @ origin
-    return result
+    return rigid_matrix(data["rotation"], data["origin"])
 
 
 def prepare_dataset(dense: Path, mesh_run: Path, output: Path, width: int, max_points: int) -> dict:
     workspace = dense / "workspace"
     reconstruction = pycolmap.Reconstruction(workspace / "sparse")
     mesh_manifest = json.loads((mesh_run / "run_manifest.json").read_text(encoding="utf-8"))
-    transform_value = mesh_manifest.get("configuration", {}).get("ground_transform")
-    transform_path = Path(transform_value).resolve() if transform_value else None
-    aligned_from_raw = aligned_world_matrix(transform_path)
+    aligned_from_raw, source_digest = mesh_coordinates(dense, mesh_manifest)
     raw_from_aligned = np.linalg.inv(aligned_from_raw)
 
     image_dir = output / "training" / "images"
@@ -90,6 +85,7 @@ def prepare_dataset(dense: Path, mesh_run: Path, output: Path, width: int, max_p
     dataset = {"schema": "aerorecon.gsplat-dataset/v1", "cameras": cameras,
                "initial_points": len(vertices), "coordinate_system": "ground-aligned-relative" if ground_aligned else "colmap-relative",
                "ground_aligned": ground_aligned,
+               "raw_to_world":aligned_from_raw.tolist(),"reconstruction_sha256":source_digest,
                "source_mesh": str(mesh_run / "surface_open3d.ply")}
     save_json(output / "training" / "dataset.json", dataset)
     return dataset

@@ -16,6 +16,7 @@ import trimesh
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
 
 from pipeline.cli_support import save_json
+from pipeline.geometry_contract import mesh_coordinates
 from pipeline.detail_semantics import NAMES, COLORS, COARSE, label_lookup, tiled_probabilities, consensus, scaled_intrinsics
 from pipeline.open3d_refine import read_colmap_array
 from pipeline.semantic_fusion import ground_rotation
@@ -62,7 +63,8 @@ def run(args):
                 'configuration':{'source':str(source), 'dense':str(dense),
                     'semantic_width':args.semantic_width,'semantic_tile':args.semantic_tile,
                     'semantic_overlap':args.semantic_overlap,'semantic_confidence':args.semantic_confidence,
-                    'observed_face_budget':args.observed_face_budget},
+                    'observed_face_budget':args.observed_face_budget,
+                    'minimum_ground_support':args.minimum_ground_support},
                 'metrics':{}, 'elapsed_s':0,
                 'warnings':['Closed backs and ground gap filling are inferred. Relative scale; no GPS or metric accuracy.']}
     save_json(out/'run_manifest.json', manifest)
@@ -72,6 +74,10 @@ def run(args):
         faces = np.asarray(mesh.triangles).copy()
         colors = np.clip(np.asarray(mesh.vertex_colors)*255,0,255).astype(np.uint8)
         dataset = json.loads((Path(args.cameras)/'training/dataset.json').read_text())
+        expected_transform, expected_digest = mesh_coordinates(dense, source_manifest)
+        camera_transform=np.asarray(dataset.get('raw_to_world', []),dtype=float)
+        if dataset.get('reconstruction_sha256') != expected_digest or camera_transform.shape!=(4,4) or not np.allclose(camera_transform, expected_transform,rtol=0,atol=1e-8):
+            raise ValueError('Camera dataset and mesh coordinates are not verified together; prepare cameras again for this mesh')
         cameras = dataset['cameras']
         processor = SegformerImageProcessor.from_pretrained('models/SegFormer-B0',local_files_only=True)
         model = SegformerForSemanticSegmentation.from_pretrained('models/SegFormer-B0',local_files_only=True).cuda().eval()
@@ -130,6 +136,8 @@ def run(args):
         keep=supported&(sky_votes/np.maximum(in_view,1)<.03)&(semantic!=4)
         ground=keep&(semantic==1)
         rotation, origin, support=fit_ground(vertices[ground])
+        if support < args.minimum_ground_support:
+            raise ValueError(f'Ground plane support {support:.1%} is below {args.minimum_ground_support:.1%}; retain the observed Open3D mesh instead of flattening uncertain terrain')
         aligned=(vertices-origin)@rotation.T
         # Reject geometry substantially beneath the measured ground. Small stereo noise
         # is flattened only in the explicitly inferred completion layer.
@@ -230,10 +238,13 @@ def run(args):
                 raw_face=face@rotation+origin; cp=raw_face@T[:3,:3].T+T[:3,3]; p=cp@K.T; src=(p[:,:2]/p[:,2:]).astype(np.float32)
                 sx=np.rint(src[:,0]).astype(int); sy=np.rint(src[:,1]).astype(int)
                 if np.all(cp[:,2]>0) and np.all((sx>=0)&(sx<rgb.shape[1])&(sy>=0)&(sy<rgb.shape[0])) and np.all(groups[sy,sx]!=4):
+                    vertex_depth=depth[sy,sx]
+                    if not np.all(np.isfinite(vertex_depth)&(vertex_depth>0)&(np.abs(vertex_depth-cp[:,2])<np.maximum(.05,vertex_depth*.03))):
+                        choice[i]=-1
                     affine=cv2.getAffineTransform(src,dst)
                     warped_sky=cv2.warpAffine((groups==4).astype(np.uint8),affine,(tile,tile),flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT,borderValue=1)
                     interior=(xx>=2)&(yy>=2)&(xx+yy<=tile-1)
-                    if not warped_sky[interior].any():
+                    if choice[i]>=0 and not warped_sky[interior].any():
                         patch=cv2.warpAffine(rgb,affine,(tile,tile),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
                         photo_faces+=1
             x=(i%columns)*tile; y=(i//columns)*tile
@@ -298,7 +309,8 @@ if __name__=='__main__':
     parser.add_argument('--semantic-overlap',type=int,default=128)
     parser.add_argument('--semantic-confidence',type=float,default=.45)
     parser.add_argument('--observed-face-budget',type=int,default=120000,help='0 preserves all observed triangles; higher values cost atlas memory')
+    parser.add_argument('--minimum-ground-support',type=float,default=.5,help='Reject uncertain planar completion; use observed TSDF geometry on nonplanar terrain')
     args=parser.parse_args()
-    if args.semantic_width<32 or args.semantic_tile<32 or not 0<=args.semantic_overlap<args.semantic_tile or not 0<=args.semantic_confidence<=1 or args.observed_face_budget<0:
+    if not 0<args.minimum_ground_support<=1 or args.semantic_width<32 or args.semantic_tile<32 or not 0<=args.semantic_overlap<args.semantic_tile or not 0<=args.semantic_confidence<=1 or args.observed_face_budget<0:
         parser.error('Invalid detail resolution, overlap, confidence or face budget')
     run(args)

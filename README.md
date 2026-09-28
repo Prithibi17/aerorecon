@@ -4,6 +4,10 @@ Experimental, local-first reconstruction of a 3D scene from drone video.
 
 AeroRecon extracts camera motion from video, reconstructs overlapping views with CUDA multi-view stereo, refines a mesh with Open3D, and trains 3D Gaussian appearance with gsplat/PyTorch. The browser can switch between the mesh, Gaussian preview, dense points, and camera path.
 
+## Alignment and measurement integrity
+
+Stage handoffs now verify the exact camera reconstruction and preserve explicit rigid transforms. Depth-only scaling is rejected; automatic flat-field deformation and procedural objects are disabled by default. See [alignment safeguards and accuracy limits](docs/ALIGNMENT_AND_ACCURACY.md). The current video has no scale reference, so its dimensions remain relative, not verified metres.
+
 ## Small-object detail update
 
 The reconstruction code now supports overlapping semantic crops, separate vehicle/building/tree/low-vegetation/field labels, a larger observed mesh budget, and an Open3D detail preset. See [settings, validation status and limitations](docs/SMALL_DETAILS.md). New labels require regenerating the scene; no improved video reconstruction has yet been validated with this update.
@@ -483,7 +487,7 @@ See OpenDroneMap's [flight planning guidance](https://docs.opendronemap.org/flyi
   tests.test_object_models tests.test_depth_refinement tests.test_pose_tracking
 ```
 
-Current classical/server result (14 September 2026): 25 tests passed and 6 tests were skipped; skipped optional dependencies are not validated by this run. The Phase 1 synthetic end-to-end validation registered 24/24 cameras with 12,683 sparse points and 0.243 px mean reprojection error. The previously documented AI geometry suite passed 10 tests in the AI environment.
+Current combined-environment result (29 September 2026): 55 tests passed with none skipped. The calibrated synthetic run registered 32/32 cameras and achieved 0.0019213 scene-unit camera RMSE on 16 held-out positions; this does not measure real-video surface accuracy. See [validation evidence](docs/ALIGNMENT_AND_ACCURACY.md). Historical results follow. The Phase 1 synthetic end-to-end validation registered 24/24 cameras with 12,683 sparse points and 0.243 px mean reprojection error. The previously documented AI geometry suite passed 10 tests in the AI environment.
 
 ## Repository policy
 

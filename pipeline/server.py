@@ -83,6 +83,22 @@ def stage_source(source, engine, required):
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
 
+def matching_dense(mesh):
+    """Match camera model content, not merely the video or newest timestamp."""
+    from pipeline.geometry_contract import mesh_coordinates
+    mesh_manifest = read_json(mesh/'run_manifest.json')
+    for candidate in sorted(OUTPUTS.iterdir(), key=lambda p:p.stat().st_mtime, reverse=True):
+        manifest = read_json(candidate/'run_manifest.json')
+        if manifest.get('engine') != 'colmap-mvs' or manifest.get('status') != 'complete':
+            continue
+        try:
+            mesh_coordinates(candidate, mesh_manifest)
+        except (ValueError, OSError, KeyError):
+            continue
+        return candidate
+    return None
+
+
 def log_path(path):
     own = path / 'worker.log'
     return own if own.exists() else ROOT / f'{path.name}.log'
@@ -331,7 +347,7 @@ def build_ai(identifier: str):
         with (ROOT/f'{new_id}.log').open('wb') as log:
             processes[new_id] = subprocess.Popen(
                 [str(executable), '-m', 'pipeline.semantic_fusion', str(source), '--out', str(OUTPUTS/new_id),
-                 '--resolution', '336', '--flat-field', '--solid-objects'],
+                 '--resolution', '518', '--no-flat-field', '--no-solid-objects'],
                 cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     return {'id': new_id, 'status': 'queued'}
@@ -340,12 +356,12 @@ def build_ai(identifier: str):
 @app.post('/api/runs/{identifier}/gsplat', status_code=202)
 def build_gsplat(identifier: str):
     source = run_dir(identifier)
-    dense = stage_source(source, 'colmap-mvs', Path('workspace')/'sparse')
     mesh = stage_source(source, 'open3d-tsdf', Path('surface_open3d.ply'))
+    dense = matching_dense(mesh) if mesh else None
     executable = ROOT/'.venv-ai/Scripts/python.exe'
     trainer = ROOT/'.venv-gsplat/Scripts/python.exe'
     if dense is None or mesh is None:
-        raise HTTPException(409, 'A completed dense MVS run and Open3D surface are required before Gaussian training.')
+        raise HTTPException(409, 'A completed Open3D surface and its matching calibrated dense reconstruction are required before Gaussian training.')
     if not executable.exists() or not trainer.exists():
         raise HTTPException(503, 'The Open3D and gsplat environments are not installed. Follow the README setup steps.')
     new_id = 'gsplat-' + uuid.uuid4().hex[:12]

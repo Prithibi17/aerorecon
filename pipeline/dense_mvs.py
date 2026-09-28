@@ -16,6 +16,7 @@ from PIL import Image
 
 from pipeline.cli_support import save_json
 from pipeline.progress import ProgressWriter
+from pipeline.geometry_contract import rigid_matrix
 
 
 STAGES = (
@@ -39,6 +40,7 @@ def load_transform(path: Path | None):
     if not path:
         return np.eye(3), np.zeros(3), False
     data = json.loads(path.read_text(encoding="utf-8"))
+    rigid_matrix(data["rotation"], data["origin"])
     return np.asarray(data["rotation"], float), np.asarray(data["origin"], float), True
 
 

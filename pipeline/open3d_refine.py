@@ -20,6 +20,7 @@ import trimesh
 from pipeline.cli_support import save_json
 from pipeline.dense_mvs import load_transform, transform_points
 from pipeline.progress import ProgressWriter
+from pipeline.geometry_contract import rigid_matrix, reconstruction_digest
 
 
 STAGES = ("Load calibrated depth", "Open3D TSDF fusion", "Mesh cleanup", "Viewer export")
@@ -77,6 +78,8 @@ def write_surface(mesh: o3d.geometry.TriangleMesh, output: Path) -> tuple[int, i
 
 
 def run(args) -> None:
+    if not np.isfinite(args.depth_scale) or args.depth_scale != 1:
+        raise ValueError('Depth-only scaling moves surfaces away from camera poses. Use depth_scale=1; apply metric calibration to the complete model after fusion.')
     source = Path(args.source_run).resolve(strict=True)
     output = Path(args.out).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -86,6 +89,8 @@ def run(args) -> None:
     manifest_source = json.loads((source / "run_manifest.json").read_text(encoding="utf-8"))
     rotation, origin, ground_aligned = load_transform(
         Path(args.ground_transform).resolve() if args.ground_transform else None)
+    raw_to_world = rigid_matrix(rotation, origin)
+    source_digest = reconstruction_digest(source)
     progress = ProgressWriter(output, STAGES)
     started = time.time()
     manifest = {
@@ -94,6 +99,7 @@ def run(args) -> None:
         "input_sha256": manifest_source["input_sha256"], "engine": "open3d-tsdf",
         "display_name": "Open3D TSDF · calibrated non-sky fusion",
         "units": "arbitrary", "georeferenced": False,
+        "raw_to_world":raw_to_world.tolist(),"reconstruction_sha256":source_digest,
         "configuration": {"source_run": str(source), "voxel_length": args.voxel_length,
                           "sdf_trunc": args.sdf_trunc, "depth_scale": args.depth_scale,
                           "ground_transform": args.ground_transform,
@@ -180,6 +186,8 @@ def run(args) -> None:
             mesh = mesh.filter_smooth_taubin(number_of_iterations=args.smooth_iterations)
         if len(mesh.triangles) > args.target_triangles:
             mesh = mesh.simplify_quadric_decimation(args.target_triangles)
+        if not len(mesh.triangles) or not np.isfinite(np.asarray(mesh.vertices)).all():
+            raise ValueError('Surface cleanup left empty or non-finite geometry')
         vertices = np.asarray(mesh.vertices)
         if ground_aligned:
             vertices[:] = transform_points(vertices, rotation, origin)

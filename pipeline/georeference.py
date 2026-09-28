@@ -31,10 +31,12 @@ def ecef_to_enu_matrix(latitude, longitude):
 def similarity(source, target):
     """Umeyama least-squares similarity: target = scale * R * source + t."""
     source, target = np.asarray(source, float), np.asarray(target, float)
+    if source.ndim != 2 or source.shape[1:] != (3,) or source.shape != target.shape or not np.isfinite(source).all() or not np.isfinite(target).all():
+        raise ValueError('Alignment requires matching finite Nx3 positions')
     if len(source) < 3: raise ValueError("At least three matched GPS camera positions are required")
     source_mean, target_mean = source.mean(0), target.mean(0)
     x, y = source - source_mean, target - target_mean
-    if np.linalg.matrix_rank(x) < 2: raise ValueError("GPS matches must cover a path with more than one direction")
+    if np.linalg.matrix_rank(x) < 2 or np.linalg.matrix_rank(y) < 2: raise ValueError("GPS matches must cover a path with more than one direction")
     covariance = y.T @ x / len(source)
     u, singular, vt = np.linalg.svd(covariance)
     sign = np.ones(3)
@@ -42,6 +44,8 @@ def similarity(source, target):
     rotation = u @ np.diag(sign) @ vt
     variance = (x * x).sum() / len(source)
     scale = float((singular * sign).sum() / variance)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError('Alignment produced an invalid scale')
     translation = target_mean - scale * rotation @ source_mean
     predicted = (scale * (rotation @ source.T)).T + translation
     residuals = np.linalg.norm(predicted - target, axis=1)
@@ -89,15 +93,23 @@ def run(args):
     viewer = json.loads((source / "viewer.json").read_text(encoding="utf-8"))
     camera_map = {item["name"]: np.asarray(item["centre"], float) for item in viewer["cameras"]}
     rows = []
+    seen = set()
     with telemetry.open(encoding="utf-8-sig", newline="") as stream:
         for row in csv.DictReader(stream):
             try:
                 if row.get("image") in camera_map and row.get("latitude") and row.get("longitude"):
+                    if row['image'] in seen:
+                        raise RuntimeError('Duplicate image in telemetry: '+row['image'])
+                    if not row.get('altitude_m'):
+                        raise RuntimeError('Altitude is required; missing altitude must not be silently set to zero')
+                    seen.add(row['image'])
                     rows.append({**row, "latitude": float(row["latitude"]), "longitude": float(row["longitude"]),
                                  "altitude_m": float(row.get("altitude_m") or 0)})
             except ValueError:
                 continue
     if len(rows) < 3: raise ValueError("Telemetry must contain GPS for at least three reconstructed image names")
+    if any(not (-90<=r['latitude']<=90 and -180<=r['longitude']<=180) or not np.isfinite(r['altitude_m']) for r in rows):
+        raise ValueError('Invalid GPS coordinates or altitude')
     anchor = rows[len(rows) // 2]
     anchor_ecef = geodetic_to_ecef(anchor["latitude"], anchor["longitude"], anchor["altitude_m"])
     enu_from_ecef = ecef_to_enu_matrix(anchor["latitude"], anchor["longitude"])
@@ -111,12 +123,14 @@ def run(args):
     matrix = np.eye(4); matrix[:3, :3] = scale * rotation; matrix[:3, 3] = translation
     mesh = trimesh.load(source / "surface.glb", force="scene")
     mesh.apply_transform(matrix); mesh.export(output / "surface_georeferenced.glb")
-    transform_gaussians(source / "gaussians.ply", output / "gaussians_georeferenced.ply", scale, rotation, translation)
+    if (source / "gaussians.ply").is_file():
+        transform_gaussians(source / "gaussians.ply", output / "gaussians_georeferenced.ply", scale, rotation, translation)
     with (output / "camera_georeference.csv").open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream); writer.writerow(["image", "east_m", "north_m", "up_m", "gps_residual_m"])
         predicted = (scale * (rotation @ model.T)).T + translation
         writer.writerows([row["image"], *predicted[i], residuals[i]] for i, row in enumerate(rows))
     report = {"schema": "aerorecon.georeference/v1", "georeferenced": True, "units": "metres",
+              "geometry_validated":False,"accuracy_state":"fit residuals only; no independent checkpoints",
               "coordinate_system": "WGS84 local tangent ENU", "anchor": {"latitude": anchor["latitude"],
               "longitude": anchor["longitude"], "altitude_m": anchor["altitude_m"]},
               "model_to_enu": matrix.tolist(), "scale_metres_per_model_unit": scale,
