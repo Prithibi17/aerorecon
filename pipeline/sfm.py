@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.cli_support import save_json
+from pipeline.calibration import assess_cameras
 
 
 PARAMETER_COUNTS = {
@@ -174,7 +175,8 @@ def reconstruct(
         "height": item.height,
         "focal_ratio": float(item.focal_length / max(item.width, item.height)),
     } for item in model.cameras.values()]
-    metrics["calibration_suspect"] = any(item["focal_ratio"] < .2 or item["focal_ratio"] > 5 for item in metrics["cameras"])
+    metrics["calibration_status"] = assess_cameras(metrics["cameras"])
+    metrics["calibration_suspect"] = metrics["calibration_status"] == "failed"
     metrics["intrinsics_fixed"] = camera.fix_intrinsics
     metrics["intrinsics_source"] = "user" if camera.parameters else "COLMAP estimate"
     metrics["geometry_validated"] = False
@@ -184,7 +186,7 @@ def reconstruct(
         f"Registered {metrics['registered_images']}/{selected} keyframes; {metrics['points']} sparse points.\n\n"
         f"Mean reprojection error: {metrics['mean_reprojection_error_px']:.3f} pixels.\n\n"
         f"Matching: {matching_label}. Intrinsics source: {metrics['intrinsics_source']}. "
-        f"Calibration plausibility: {'FAILED' if metrics['calibration_suspect'] else 'no extreme focal estimate detected'}.\n\n"
+        f"Calibration plausibility: {metrics['calibration_status'].replace('_', ' ')}.\n\n"
         "Coordinates have relative scale and are not georeferenced. Reprojection error measures image fit, not ground accuracy. "
         "Dense surfaces, telemetry alignment, and independent accuracy validation are later stages.\n",
         encoding="utf-8",

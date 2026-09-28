@@ -12,6 +12,7 @@ import uuid
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pipeline.calibration import failed as calibration_failed
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS = ROOT / 'outputs'
@@ -64,7 +65,7 @@ def camera_source(source):
         manifest=read_json(path/'run_manifest.json')
         metrics=read_json(path/'metrics.json')
         if (manifest.get('status')=='complete' and manifest.get('input_sha256')==digest
-                and metrics.get('registered_ratio',0)>.95 and not metrics.get('calibration_suspect',True)
+                and metrics.get('registered_ratio',0)>.95 and not calibration_failed(metrics)
                 and (path/'sparse'/str(metrics.get('best_model_id'))).is_dir()):
             candidates.append(path)
     return max(candidates,key=lambda p:p.stat().st_mtime) if candidates else None
@@ -117,6 +118,13 @@ def describe(path):
     manifest = read_json(path/'run_manifest.json')
     job = read_json(path/'job.json')
     metrics = read_json(path/'metrics.json')
+    # Runs created before calibration_status existed are classified from their
+    # retained focal ratios, so the interface does not keep showing a stale
+    # hard failure for a legitimate wide-angle estimate.
+    if metrics and 'calibration_status' not in metrics:
+        from pipeline.calibration import assess_cameras
+        metrics['calibration_status'] = assess_cameras(metrics.get('cameras', [])) if metrics.get('cameras') else ('failed' if metrics.get('calibration_suspect') else 'estimated')
+        metrics['calibration_suspect'] = metrics['calibration_status'] == 'failed'
     progress = read_json(path/'progress.json')
     if manifest.get('fusion'):
         metrics = {'engine': manifest.get('engine', 'da3-small'), 'fusion': manifest['fusion'], **read_json(path/'progress.json'), **metrics}
@@ -157,6 +165,10 @@ def describe(path):
             status, stage = 'failed', 'Processing was interrupted'
     name = manifest.get('display_name') or job.get('name') or Path(manifest.get('input', path.name)).name
     warnings = list(manifest.get('warnings', []))
+    if metrics.get('calibration_status') != 'failed':
+        warnings = [warning for warning in warnings if not warning.startswith('UNRELIABLE GEOMETRY: implausible focal length')]
+        if metrics.get('calibration_status') in {'wide_angle_review', 'telephoto_review'}:
+            warnings.append('Camera calibration is estimated for a wide-angle or telephoto lens. Inspect the reconstruction before relying on surface detail.')
     if metrics.get('registered_ratio', 1) < .8 and not any('Partial reconstruction' in w for w in warnings):
         warnings.append('Partial reconstruction: only part of the video is represented. This is not a complete map of the area.')
     if metrics.get('model_count', 0) > 1 and not any('disconnected' in w for w in warnings):

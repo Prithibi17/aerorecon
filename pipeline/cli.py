@@ -71,6 +71,8 @@ def run(args):
             manifest['metrics'] = reconstruct_sfm(out, camera, exhaustive=getattr(args, 'exhaustive', False), progress=progress)
             if manifest['metrics']['calibration_suspect']:
                 manifest['warnings'].append('UNRELIABLE GEOMETRY: implausible focal length estimated. This point cloud is a diagnostic result, not a usable map.')
+            elif manifest['metrics']['calibration_status'] != 'estimated':
+                manifest['warnings'].append('Wide-angle or telephoto calibration estimate: inspect the result before relying on dense surface detail.')
             if getattr(args, 'fix_intrinsics', False):
                 manifest['warnings'].append('Camera intrinsics were fixed to the supplied values. This is an experimental result unless those values are independently verified.')
             if manifest['metrics']['registered_ratio'] < .8:

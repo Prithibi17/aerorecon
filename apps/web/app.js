@@ -183,7 +183,8 @@ function renderRuns() {
   for (const run of runs) {
     const button = document.createElement('button'); button.className = `run ${run.id===selected?'active':''}`;
     const title = document.createElement('strong'); title.textContent = run.synthetic?'Synthetic test':run.name; button.title=title.textContent;
-    const status = document.createElement('small'); status.textContent = run.metrics.calibration_suspect?'Calibration failed':`${run.status==='complete'?'✓ ':''}${run.synthetic?'Test scene · ':''}${run.status==='complete'?'Model ready':run.stage}`;
+    const calibration=run.metrics.calibration_status||(run.metrics.cameras?.some(c=>c.focal_ratio<.10||c.focal_ratio>3)?'failed':run.metrics.cameras?.some(c=>c.focal_ratio<.20)?'wide_angle_review':'estimated');
+    const status = document.createElement('small'); status.textContent = calibration==='failed'?'Calibration failed':calibration==='wide_angle_review'?'Wide-angle calibration review':calibration==='telephoto_review'?'Telephoto calibration review':`${run.status==='complete'?'✓ ':''}${run.synthetic?'Test scene · ':''}${run.status==='complete'?'Model ready':run.stage}`;
     button.append(title,status);button.onclick=()=>selectRun(run.id);$('runList').append(button);
   }
 }
@@ -203,9 +204,10 @@ function renderDetails(run) {
   const fused=!!m.fusion&&!open3d;
   const partial=run.status==='complete'&&m.registered_ratio<.8;
   const elapsed=run.elapsed_s?(run.elapsed_s<60?`${Math.round(run.elapsed_s)} sec`:`${Math.round(run.elapsed_s/60)} min`):'';
-  $('projectSubtitle').textContent = `${m.calibration_suspect?'Unreliable geometry — calibration failed':partial?'Partial sparse model ready':run.stage} · ${run.synthetic?'Ideal synthetic scene':'Drone video'}${elapsed?' · '+elapsed+' processing':''}`;
-  $('modelBadge').textContent=gsplat?'PYTORCH 3D GAUSSIANS':open3d?'OPEN3D TSDF':photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':m.calibration_suspect?'UNRELIABLE GEOMETRY':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
-  $('modelBadge').style.color=ai||partial||m.calibration_suspect||m.intrinsics_fixed?'var(--orange)':'';
+  const calibration=m.calibration_status||(m.cameras?.some(c=>c.focal_ratio<.10||c.focal_ratio>3)?'failed':m.cameras?.some(c=>c.focal_ratio<.20)?'wide_angle_review':'estimated');
+  $('projectSubtitle').textContent = `${calibration==='failed'?'Unreliable geometry — calibration failed':calibration==='wide_angle_review'?'Wide-angle calibration estimated — review result':calibration==='telephoto_review'?'Telephoto calibration estimated — review result':partial?'Partial sparse model ready':run.stage} · ${run.synthetic?'Ideal synthetic scene':'Drone video'}${elapsed?' · '+elapsed+' processing':''}`;
+  $('modelBadge').textContent=gsplat?'PYTORCH 3D GAUSSIANS':open3d?'OPEN3D TSDF':photogrammetric?'DENSE PHOTOGRAMMETRY':ai?'AI-INFERRED GEOMETRY':calibration==='failed'?'UNRELIABLE GEOMETRY':calibration!=='estimated'?'CALIBRATION REVIEW':partial?'PARTIAL RECONSTRUCTION':m.intrinsics_fixed?'EXPERIMENTAL CALIBRATION':'SPARSE RECONSTRUCTION';
+  $('modelBadge').style.color=ai||partial||calibration!=='estimated'||m.intrinsics_fixed?'var(--orange)':'';
   $('surfaceLayer').hidden=!(ai||photogrammetric||gsplat);$('splatLayer').hidden=!gsplat;
   $('outputType').textContent=open3d?'Open3D refined surface':photogrammetric?'Dense verified point cloud':fused?'Full-video fused surface':ai?'AI depth + dense cloud':'Sparse point cloud';
   $('geometryType').textContent=open3d?'Calibrated TSDF':photogrammetric?'Multi-view stereo':ai?'AI-inferred':'Estimated';

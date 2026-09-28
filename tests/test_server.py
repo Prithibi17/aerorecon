@@ -79,6 +79,18 @@ def test_same_video_camera_selection_rejects_bad_calibration(tmp_path, monkeypat
     assert server.camera_source(tmp_path/'upload')==tmp_path/'good'
 
 
+def test_legacy_wide_angle_result_is_not_displayed_as_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, 'OUTPUTS', tmp_path)
+    run=tmp_path/'wide';run.mkdir()
+    (run/'run_manifest.json').write_text(json.dumps({'status':'complete','display_name':'wide.mp4','warnings':['UNRELIABLE GEOMETRY: implausible focal length estimated. This point cloud is a diagnostic result, not a usable map.']}))
+    (run/'metrics.json').write_text(json.dumps({'cameras':[{'focal_ratio':.168}], 'calibration_suspect':True, 'registered_ratio':1}))
+    (run/'progress.json').write_text('{}')
+    value=server.describe(run)
+    assert value['metrics']['calibration_status']=='wide_angle_review'
+    assert not value['metrics']['calibration_suspect']
+    assert not any(warning.startswith('UNRELIABLE') for warning in value['warnings'])
+
+
 def test_repeat_upload_reuses_exact_completed_video(tmp_path, monkeypatch):
     import hashlib
     from test_pipeline import video
