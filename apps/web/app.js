@@ -136,8 +136,12 @@ async function loadCloud(id) {
       for(const index of new Set(surfaceData.indices))surfaceBounds.expandByPoint(new THREE.Vector3(vertices[index*3],vertices[index*3+1],vertices[index*3+2]));
       const surfaceCentre=surfaceBounds.getCenter(new THREE.Vector3());
       const size=surfaceBounds.getSize(new THREE.Vector3());
-      const distance=Math.max(size.x,size.y,size.z);
-      home={target:surfaceCentre,position:surfaceCentre.clone().add(new THREE.Vector3(.45,.85,.95).multiplyScalar(distance))};
+      const extent=Math.max(size.x,size.y,size.z,.001);
+      // Keep the actual surface prominent in the viewer. The previous diagonal
+      // camera offset left long, low drone maps occupying only a small part of
+      // the viewport, making alignment and texture defects hard to inspect.
+      const distance=extent;
+      home={target:surfaceCentre,position:surfaceCentre.clone().add(new THREE.Vector3(.32,.55,.65).multiplyScalar(distance))};
     }
     if(data.gaussian_splats){
       gaussianViewer=new GaussianSplats3D.Viewer({selfDrivenMode:false,renderer,camera,threeScene:scene,useBuiltInControls:false,
